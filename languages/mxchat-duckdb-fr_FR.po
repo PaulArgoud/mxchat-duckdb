@@ -3,7 +3,7 @@
 # This file is distributed under the GPL v2 or later license.
 msgid ""
 msgstr ""
-"Project-Id-Version: MxChat DuckDB / MotherDuck 0.2.0\n"
+"Project-Id-Version: MxChat DuckDB / MotherDuck 0.5.0\n"
 "Report-Msgid-Bugs-To: https://github.com/paulargoud/mxchat-duckdb/issues\n"
 "POT-Creation-Date: 2026-05-17 00:00+0000\n"
 "PO-Revision-Date: 2026-05-17 00:00+0000\n"

@@ -4,7 +4,7 @@ Tags: chatbot, ai, vector-search, duckdb, motherduck, pinecone, embeddings, rag,
 Requires at least: 6.0
 Tested up to: 6.7
 Requires PHP: 8.0
-Stable tag: 0.4.0
+Stable tag: 0.5.0
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -95,6 +95,10 @@ By default, no — your `.duckdb` file is preserved on uninstall because it may 
 
 == Changelog ==
 
+= 0.5.0 =
+* Documentation reorganised: ARCHITECTURE.md with Mermaid flowchart + sequence diagrams; reference moved to docs/CONFIGURATION.md, docs/HOOKS.md, docs/CLI.md, docs/USAGE.md. README trimmed from 354 → 144 lines.
+* Internal refactor (no behaviour change): `Vector_Store` split into Schema + Query + façade; `Sync` split into MySQL pipeline + Post Reprocessor + façade; `admin/views/settings.php` split into 7 per-section partials. Largest remaining file went from 858 → 332 lines. Public API unchanged.
+
 = 0.4.0 =
 * Async reprocess via Action Scheduler (survives PHP timeouts on large catalogs).
 * Pinecone → DuckDB migration WP-CLI command — no re-embedding required.
@@ -136,6 +140,9 @@ By default, no — your `.duckdb` file is preserved on uninstall because it may 
 * Initial release.
 
 == Upgrade Notice ==
+
+= 0.5.0 =
+Documentation reorganised + internal refactor. No data migration, no behaviour change — public API stable. Safe drop-in upgrade.
 
 = 0.4.0 =
 Adds async reprocess (Action Scheduler), Pinecone migration tool, Parquet I/O, optional INT8 quantization. No data migration required — existing schema continues to work; new features are opt-in.

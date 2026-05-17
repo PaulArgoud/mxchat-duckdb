@@ -14,6 +14,43 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Per-bot configuration UI for multi-bot installs.
 - Built-in cross-encoder reranker (Cohere Rerank / BGE-reranker).
 
+---
+
+## [0.5.0] — 2026-05-17
+
+Documentation reorganisation + internal refactor. **No behaviour change**, no
+data migration, public API stable — safe drop-in upgrade from 0.4.0.
+
+### Changed (docs)
+
+- **README trimmed from 354 → 144 lines.** Onboarding stays in the README
+  (badges, why, features, requirements, install, quick start, doc index,
+  roadmap, limitations). Reference content moved to dedicated files so the
+  front page is scannable in 60 s.
+- **New `ARCHITECTURE.md`** with two Mermaid diagrams (rendered natively
+  by GitHub):
+  - Flowchart of the two integration paths (Option A — filter override;
+    Option B — Pinecone wire-protocol proxy).
+  - Sequence diagram of a full query lifecycle (User → MxChat → adapter →
+    query cache → vector store → DuckDB → dedup → rerank → metrics).
+  - Plus the file layout and the five design conventions contributors
+    should follow.
+- **New `docs/CONFIGURATION.md`** — every option in `mxchat_duckdb_options`,
+  every sidecar option (proxy tokens, metrics, reprocess state, migration
+  state), where data is stored, dimension/storage change guards.
+- **New `docs/HOOKS.md`** — all 9 filters with full signatures and PHP
+  examples (Cohere/BGE reranker integration, ACF-aware post content,
+  multi-bot bot_id derivation, rate-limit override, etc.).
+- **New `docs/CLI.md`** — every `wp mxchat-duckdb` subcommand with sample
+  stdout and exit-code contract.
+- **New `docs/USAGE.md`** — howtos for the 5 specialised workflows: async
+  reprocess (with monitoring + cancel), Pinecone migration (full semantics
+  + resumption), Parquet backup/restore, INT8 quantization (when to use,
+  switching layout), `/health` endpoint, end-to-end verification.
+- **`CONTRIBUTING.md`** updated to point new contributors at the right doc
+  file for each kind of change (option → CONFIGURATION, filter → HOOKS,
+  CLI subcommand → CLI).
+
 ### Changed (internal refactor — no behaviour change)
 
 - **`Vector_Store` split (858 → 323 lines).** The 858-line monolith is now
@@ -68,6 +105,12 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   The shell handles the page header, the last-error notice, the
   PECL/CLI performance warning, then `include`s each partial in order.
   Adding a new section is now one new file plus one new `include` line.
+
+### Notes
+
+- Largest PHP file went from 858 lines (`class-duckdb-vector-store.php`)
+  to 332 lines (`class-duckdb-cli.php`, idiomatic command pattern).
+- No new public filters, no new options, no schema migration.
 
 ---
 
