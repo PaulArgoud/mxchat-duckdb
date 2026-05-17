@@ -34,64 +34,25 @@ This plugin adds a third option:
 - 🔀 **Hybrid BM25 + vector retrieval** (optional) via DuckDB's FTS extension with min-max-normalised score blending.
 - 💨 **Query result cache** keyed by embedding hash + filter + bot — slashes MotherDuck cost and latency on repeat queries.
 - 🎯 **Per-source dedup + custom reranker hook** so the LLM sees diverse, high-quality context.
+- 🗜️ **INT8 quantization** (experimental, opt-in) — 4× smaller vector storage, < 1 % recall loss on unit-normalised embeddings.
 - 🔌 **Drop-in for Pinecone** — implements the Pinecone wire protocol over REST, so MxChat needs zero modifications to use it.
 - 🔐 **Per-namespace REST tokens** so leaking one bot's API key doesn't compromise others.
 - 🪛 **Optional upstream patch** for direct in-process integration (eliminates one HTTP round-trip; ~12 lines, [see patches/](patches/README.md)).
-- 🔁 **Two ingestion paths** — sync from MySQL knowledge base, or reprocess from WordPress posts (recommended for Pinecone-only installs).
+- 🔁 **Four ingestion paths** — bulk-sync from MySQL, sync reprocess from WordPress posts, async reprocess via Action Scheduler (survives PHP timeouts on large catalogs), and one-shot **Pinecone → DuckDB migration** without re-embedding.
+- 📦 **Parquet export/import** — portable backups and seamless moves between embedded ⇄ MotherDuck via DuckDB's native `COPY`.
 - 🧰 **Auto cascade-delete** with nonce-verified handler; orphan compactor cron sweeps stragglers.
 - 🩺 **`/health` endpoint + rolling p50/p95/p99 latency metrics** for external monitors.
-- 🛠️ **WP-CLI**: `wp mxchat-duckdb {test|stats|sync|reprocess|compact|metrics|cache}`.
+- 🛠️ **WP-CLI**: `wp mxchat-duckdb {test|stats|sync|reprocess|async-reprocess|compact|metrics|cache|export|import|migrate-from-pinecone}`.
+- 🧪 **CI on every PR** — `php -l` matrix (PHP 8.0–8.3), `msgfmt` catalog check, PHPStan, PHPUnit smoke suite.
 - 🕒 **Hourly WP-cron** for incremental sync of new content + daily orphan compaction.
 - 🛡️ **Per-user-role access control** preserved from MxChat (metadata-driven).
 - 🌐 **i18n-ready** — English source strings, French translation shipped, `.pot` template for additional locales.
 
 ## Architecture
 
-The plugin connects to MxChat via two parallel integration paths. The two paths can coexist; whichever is available "wins" at runtime.
+The plugin connects to MxChat via two parallel integration paths (**Option A** — filter override; **Option B** — Pinecone wire-protocol proxy). Both are registered unconditionally; whichever's prerequisite is present at runtime wins.
 
-```
-                                        ┌────────────────────────────┐
-   ┌──────────────┐                     │       MxChat (core)        │
-   │ User message │ ──► chatbot ──────► │  find_relevant_content()   │
-   └──────────────┘                     │            │               │
-                                        │            ▼               │
-                                        │  find_relevant_content_    │
-                                        │       pinecone()           │
-                                        └─────┬──────┬───────────────┘
-                  (Option A)                  │      │   (Option B)
-            mxchat_pinecone_matches_override  │      │   wp_remote_post → "Pinecone host"
-                                              │      │   (which is actually our REST endpoint)
-                                              ▼      ▼
-                                 ┌──────────────────────────────┐
-                                 │   mxchat-duckdb plugin       │
-                                 │  ──────────────────────      │
-                                 │  Pinecone proxy (REST)       │
-                                 │  Search adapter (filter)     │
-                                 │            │                 │
-                                 │            ▼                 │
-                                 │   ┌──────────────────────┐   │
-                                 │   │  DuckDB Vector Store │   │
-                                 │   │  (HNSW + cosine)     │   │
-                                 │   └──────────────────────┘   │
-                                 │            │                 │
-                                 │     ┌──────┴──────┐          │
-                                 │     ▼             ▼          │
-                                 │ ┌─────────┐  ┌──────────┐    │
-                                 │ │embedded │  │MotherDuck│    │
-                                 │ │ .duckdb │  │  cloud   │    │
-                                 │ └─────────┘  └──────────┘    │
-                                 └──────────────────────────────┘
-```
-
-### Option A — filter override (preferred, requires a small upstream patch)
-
-When `mxchat-basic` is patched with the snippet in [`patches/README.md`](patches/README.md), this plugin hooks the `mxchat_pinecone_matches_override` filter to substitute the Pinecone HTTP call with a direct DuckDB SQL query. **Zero HTTP overhead.**
-
-### Option B — Pinecone proxy (works on stock MxChat)
-
-Without the patch, the plugin registers itself as a Pinecone backend via the `mxchat_get_bot_pinecone_config` filter that MxChat already exposes, and serves a REST endpoint at `/wp-json/mxchat-duckdb/v1/pinecone-proxy/` that emulates the Pinecone wire protocol. MxChat thinks it's talking to Pinecone; the proxy translates each call to DuckDB SQL.
-
-Both paths return identical results. Option A is faster; Option B is zero-touch.
+See [**ARCHITECTURE.md**](ARCHITECTURE.md) for the full integration flowchart, a sequence diagram of the query lifecycle (cache → vector → BM25 → dedup → rerank → metrics), the file layout, and the design conventions contributors should follow.
 
 ## Requirements
 
@@ -149,6 +110,7 @@ All settings are stored in a single WP option, `mxchat_duckdb_options`:
 | `motherduck_database` | string | `my_db` | MotherDuck database name. |
 | `embedded_path` | string | autodetect | Path to the `.duckdb` file. |
 | `embedded_binary` | string | autodetect | Path to the `duckdb` CLI binary (used if the PECL extension is unavailable). |
+| `table_name` | string | `mxchat_vectors` | DuckDB table name. Only alphanumeric + underscore; sanitised on save. |
 | `embedding_dim` | int | `1536` | Must match the embedding model active in MxChat. |
 | `distance_metric` | enum | `cosine` | `cosine`, `l2sq`, or `ip`. |
 | `hnsw_enabled` | bool | `true` | Create an HNSW index over the embedding column. |
@@ -256,56 +218,6 @@ metrics snapshot. Suitable for UptimeRobot / Pingdom / k6 probes. Public by
 default — gate it via the `mxchat_duckdb_health_public` filter to require
 `manage_options`.
 
-## File layout
-
-```
-mxchat-duckdb/
-├── mxchat-duckdb.php                              Plugin bootstrap
-├── uninstall.php                                  Full cleanup on plugin delete
-├── readme.txt                                     WordPress.org plugin-directory readme
-├── composer.json                                  Classmap autoload + dev-deps
-├── phpstan.neon.dist                              PHPStan config (level 6)
-├── phpunit.xml.dist                               PHPUnit config
-├── LICENSE                                        GPL v2
-├── .github/workflows/
-│   ├── ci.yml                                     php -l matrix + msgfmt + PHPStan + PHPUnit
-│   └── release.yml                                Build & attach release zip on v* tags
-├── includes/
-│   ├── class-duckdb-options.php                   Settings + defaults + directory blockers
-│   ├── class-duckdb-metrics.php                   Rolling latency window + counters
-│   ├── class-duckdb-quantization.php              INT8 round-trip helpers
-│   ├── class-duckdb-connection.php                Interface + cached factory
-│   ├── class-duckdb-motherduck-connection.php     ATTACH wrapper over the embedded backend
-│   ├── class-duckdb-embedded-connection.php       PECL + CLI backend with init-SQL + retry
-│   ├── class-duckdb-vector-store.php              Versioned schema, hybrid query, Parquet I/O
-│   ├── class-duckdb-sync.php                      Bulk sync + reprocess + WP-cron + bot_id detection
-│   ├── class-duckdb-async-reprocess.php           Action Scheduler driver
-│   ├── class-duckdb-pinecone-migrator.php         Resumable Pinecone → DuckDB copier
-│   ├── class-duckdb-compactor.php                 Daily orphan-vector pruning cron
-│   ├── class-duckdb-pinecone-proxy.php            REST endpoints (rate-limited, per-namespace tokens)
-│   ├── class-duckdb-search-adapter.php            Filter hooks (Option A + Option B) + error notices
-│   ├── class-duckdb-health.php                    /wp-json/mxchat-duckdb/v1/health
-│   ├── class-duckdb-cli.php                       WP-CLI commands (only loaded under WP_CLI)
-│   └── class-duckdb-admin.php                     Settings page + AJAX
-├── admin/views/
-│   └── settings.php                               Settings UI template
-├── assets/
-│   └── admin.js                                   AJAX handlers (test, sync, reprocess)
-├── languages/
-│   ├── mxchat-duckdb.pot                          Translation template
-│   ├── mxchat-duckdb-fr_FR.po                     French translation source
-│   └── mxchat-duckdb-fr_FR.mo                     French compiled catalog
-├── tests/
-│   ├── bootstrap.php                              PHPUnit bootstrap (WP function shims)
-│   ├── phpstan-bootstrap.php                      PHPStan WP stubs
-│   └── unit/                                      Smoke tests on pure-PHP utilities
-├── patches/
-│   └── README.md                                  Optional upstream patch (Option A)
-├── CHANGELOG.md
-├── CONTRIBUTING.md
-└── README.md
-```
-
 ## Verification (end-to-end test)
 
 1. Install on a staging WordPress with MxChat active.
@@ -317,11 +229,12 @@ mxchat-duckdb/
 
 ## Roadmap
 
+- [x] ~~Import-from-Pinecone tool~~ — shipped in v0.4.0 (`wp mxchat-duckdb migrate-from-pinecone`)
 - [ ] Submit the upstream patch (`mxchat_pinecone_matches_override` filter) to MxChat
 - [ ] Migrate Option B users to Option A automatically once the filter ships
 - [ ] PDF / attachment reprocessing (currently only post types are covered)
 - [ ] Per-bot configuration UI (multi-bot installs)
-- [ ] Import-from-Pinecone tool (one-shot vector copy for users who don't want to re-embed)
+- [ ] Built-in cross-encoder reranker (Cohere Rerank / BGE-reranker) plugged into the `mxchat_duckdb_rerank_matches` hook
 - [ ] Native DuckDB extension binding when the PECL extension API stabilizes
 - [ ] Bench suite comparing query latency: MySQL-PHP vs Pinecone vs DuckDB embedded vs MotherDuck
 
