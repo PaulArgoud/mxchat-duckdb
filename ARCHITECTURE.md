@@ -144,6 +144,11 @@ mxchat-duckdb/
 │   └── unit/                                      Smoke tests on pure-PHP utilities
 ├── patches/
 │   └── README.md                                  Optional upstream patch (Option A)
+├── docs/
+│   ├── CONFIGURATION.md                           Every option, sidecar storage, change guards
+│   ├── HOOKS.md                                   Every filter / action, with PHP examples
+│   ├── CLI.md                                     Full WP-CLI reference
+│   └── USAGE.md                                   Howtos: async, Pinecone, Parquet, INT8, health
 ├── ARCHITECTURE.md                                (this file)
 ├── CHANGELOG.md
 ├── CONTRIBUTING.md

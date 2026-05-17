@@ -26,12 +26,22 @@ For security issues, please email **paul@argoud.net** instead of opening a publi
 
 ## Design conventions
 
-- **No HTTP fan-out for MotherDuck.** MotherDuck has no public SQL-execution REST API. Always go through DuckDB's native client + `ATTACH 'md:…'`.
-- **Always go through `MxChat_DuckDB_Connection_Factory::current()`** for backend access. The factory caches one connection per request; constructing a connection by hand silently breaks that cache.
-- **Schema changes go through a numbered migration.** Bump `MxChat_DuckDB_Vector_Store::TARGET_SCHEMA_VERSION` and add an `apply_migration()` branch. Migrations must be idempotent — they may run against an install that already has parts of the target state.
-- **Cache invalidation belongs in the writer**, not the caller. `upsert()` / `delete_*()` flush the query cache themselves; new write paths must do the same (call `MxChat_DuckDB_Plugin::flush_query_cache()`).
-- **Don't trust mxchat's nonce check.** AJAX handlers that mutate state must verify the nonce + capability themselves, even when chained behind a mxchat hook.
-- **Errors are surfaced, not swallowed.** Use `error_log()` + the `last_error` option + the admin notice transient instead of returning empty matches silently — except where graceful degradation is explicitly documented (FTS extension missing, HNSW index unavailable, etc.).
+See [ARCHITECTURE.md → Design conventions](ARCHITECTURE.md#design-conventions) for the full list. The five non-negotiables:
+
+- No HTTP fan-out for MotherDuck — always go through DuckDB native + `ATTACH 'md:…'`.
+- Always obtain backend handles through `MxChat_DuckDB_Connection_Factory::current()` so the per-request cache works.
+- Schema changes go through a numbered migration on `MxChat_DuckDB_Vector_Store::TARGET_SCHEMA_VERSION`. Migrations are idempotent.
+- Cache invalidation lives in the writer — every new write path must call `MxChat_DuckDB_Plugin::flush_query_cache()`.
+- Surfacing > swallowing. Use `error_log()` + the `last_error` option + the admin notice transient.
+
+## Where the docs live
+
+- [README.md](README.md) — onboarding only.
+- [ARCHITECTURE.md](ARCHITECTURE.md) — how the plugin works internally, plus diagrams.
+- [docs/CONFIGURATION.md](docs/CONFIGURATION.md), [docs/HOOKS.md](docs/HOOKS.md), [docs/CLI.md](docs/CLI.md), [docs/USAGE.md](docs/USAGE.md) — reference and howtos.
+- [CHANGELOG.md](CHANGELOG.md) — add an `## [Unreleased]` entry for every user-visible change.
+
+If you add a new option, also document it in `docs/CONFIGURATION.md`. New filter / action → `docs/HOOKS.md`. New CLI subcommand → `docs/CLI.md`.
 
 ## Running locally
 

@@ -98,134 +98,17 @@ Then activate **MxChat DuckDB / MotherDuck** in the WordPress plugins screen (af
 
 > ⚠️ Reprocessing calls the embedding API configured in MxChat (OpenAI / Voyage / Gemini), which may incur usage costs. Typical cost: a few cents for 100–500 posts on `text-embedding-3-small`.
 
-## Configuration
+## Documentation
 
-All settings are stored in a single WP option, `mxchat_duckdb_options`:
-
-| Key | Type | Default | Purpose |
-|---|---|---|---|
-| `enabled` | bool | `false` | Master switch. When off, MxChat falls back to its native behavior. |
-| `mode` | enum | `motherduck` | `motherduck` or `embedded`. |
-| `motherduck_token` | string | `""` | MotherDuck auth token. |
-| `motherduck_database` | string | `my_db` | MotherDuck database name. |
-| `embedded_path` | string | autodetect | Path to the `.duckdb` file. |
-| `embedded_binary` | string | autodetect | Path to the `duckdb` CLI binary (used if the PECL extension is unavailable). |
-| `table_name` | string | `mxchat_vectors` | DuckDB table name. Only alphanumeric + underscore; sanitised on save. |
-| `embedding_dim` | int | `1536` | Must match the embedding model active in MxChat. |
-| `distance_metric` | enum | `cosine` | `cosine`, `l2sq`, or `ip`. |
-| `hnsw_enabled` | bool | `true` | Create an HNSW index over the embedding column. |
-| `top_k` | int | `50` | Default `topK` for similarity queries. |
-| `hybrid_enabled` | bool | `false` | Blend BM25 full-text scores with vector similarity. Requires the DuckDB FTS extension. |
-| `hybrid_alpha` | float | `0.7` | Weight on the vector score (1.0 = pure vector, 0.0 = pure BM25). |
-| `query_cache_enabled` | bool | `true` | Cache top-K results in a transient. Invalidated automatically on upsert/delete. |
-| `query_cache_ttl` | int | `300` | Cache TTL in seconds (0 disables write, lookups still happen). |
-| `dedup_per_source` | bool | `false` | Collapse multiple chunks from the same `source_url` in the final top-K. |
-| `slow_query_ms` | int | `500` | Queries slower than this are logged to PHP's error log. Set 0 to disable. |
-| `embedding_storage` | enum | `float32` | `float32` or `int8` (experimental — 4× smaller storage, ~1 % recall loss, locked once the table has rows). |
-
-## Hooks & filters
-
-The plugin exposes the following filters that **other** plugins can use to extend its behavior:
-
-| Filter | Signature | Purpose |
-|---|---|---|
-| `mxchat_duckdb_post_content` | `(string $content, WP_Post $post): string` | Customize the text content that gets sent to MxChat's ingestion pipeline during reprocessing — useful for appending custom meta, ACF data, etc. |
-| `mxchat_duckdb_sync_bot_id` | `(string $bot_id, object $row): string` | Override the `bot_id` derived from a KB row during sync. Useful for multi-bot installs where the bot is derived from URL prefix or meta. |
-| `mxchat_duckdb_upsert_chunk_size` | `(int $size, bool $is_remote): int` | Override the upsert batch size (defaults: 250 local, 50 MotherDuck). Drop it lower if you hit body-size limits on slow links. |
-| `mxchat_duckdb_proxy_rate_limit_per_minute` | `(int $max): int` | Override the per-minute request cap on the Pinecone-proxy REST endpoints (default 120). Set to 0 to disable. |
-| `mxchat_duckdb_query_text` | `(string $text, string $bot_id, array $filter): string` | Provide the user query text for hybrid BM25 scoring. Empty string disables the BM25 leg. |
-| `mxchat_duckdb_rerank_matches` | `(array $matches, array $embedding, string $bot_id, array $filter, string $query_text): array` | Custom reranker hook — return a re-ordered top-K (cross-encoders, Cohere Rerank, etc.). |
-| `mxchat_duckdb_max_retries` | `(int $n): int` | Override the retry-on-transient-error attempts for idempotent SQL (default 3). |
-| `mxchat_duckdb_health_public` | `(bool $allow, WP_REST_Request $req): bool` | Gate the `/health` endpoint behind authentication. Default is `true` (public). |
-| `mxchat_duckdb_compactor_max_deletes` | `(int $max): int` | Per-run delete cap for the orphan compactor (default 5000). |
-
-## WP-CLI
-
-```
-wp mxchat-duckdb test                                    # ping backend + report row count
-wp mxchat-duckdb stats                                   # counters, p50/p95/p99, last sync
-wp mxchat-duckdb sync                                    # full MySQL → DuckDB
-wp mxchat-duckdb reprocess --post-types=post,page,product --batch=25
-wp mxchat-duckdb async-reprocess --post-types=post,page  # queue via Action Scheduler (survives PHP timeouts)
-wp mxchat-duckdb compact                                 # run orphan compactor now
-wp mxchat-duckdb metrics [--reset]                       # inspect / reset metrics
-wp mxchat-duckdb cache --flush                           # clear the query result cache
-wp mxchat-duckdb export --path=/tmp/backup.parquet       # dump every vector to Parquet
-wp mxchat-duckdb import --path=/tmp/backup.parquet       # restore from Parquet
-wp mxchat-duckdb migrate-from-pinecone --api-key=… --host=… [--namespace=…]
-                                                         # one-shot Pinecone → DuckDB, no re-embedding
-```
-
-## Async reprocess
-
-For large catalogs (5k+ posts), the synchronous reprocess can hit PHP's
-`max_execution_time`. The async path enqueues one job per post in
-[Action Scheduler](https://actionscheduler.org/) (bundled with WooCommerce
-and many WP plugins; otherwise install the standalone Action Scheduler
-plugin). Trigger via `wp mxchat-duckdb async-reprocess --post-types=…` or
-the admin button. Action Scheduler runs the queue in the background on
-its own cron — you can close the browser tab and come back later.
-
-## Pinecone migration
-
-If you're already on Pinecone and want to move without paying for
-re-embedding, run:
-
-```bash
-wp mxchat-duckdb migrate-from-pinecone \
-    --api-key=pcsk_xxx \
-    --host=my-index-abcd.svc.us-east1-aws.pinecone.io \
-    --namespace=default
-```
-
-The migrator paginates `/vectors/list` + batches `/vectors/fetch` and writes
-straight to DuckDB. State is persisted to an option so a failure mid-run is
-resumable: just re-run the command.
-
-## Backups / cross-backend moves (Parquet)
-
-```bash
-# In embedded mode:
-wp mxchat-duckdb export --path=/tmp/mxchat.parquet
-# Switch backend to MotherDuck in the admin, then:
-wp mxchat-duckdb import --path=/tmp/mxchat.parquet
-```
-
-The Parquet file is portable: open it in DuckDB CLI, inspect with Python +
-pandas, ship it to S3 with `aws s3 cp`. No proprietary format.
-
-## INT8 quantization (experimental)
-
-Set `embedding_storage = 'int8'` in plugin settings *before* any data is
-ingested. Vectors are stored as `TINYINT[N]` (1 byte per component) instead
-of `FLOAT[N]` (4 bytes) — a 4× storage saving for the embedding column.
-
-* Round-trip recall: > 99.9 % on unit-normalised embeddings (tested on
-  OpenAI ada-002, text-embedding-3-*, BGE, Voyage).
-* Caveat: the layout is locked once rows exist. To switch from float32 to
-  int8 (or back), export to Parquet, wipe the table, flip the option,
-  re-import.
-
-## Health endpoint
-
-```
-GET /wp-json/mxchat-duckdb/v1/health
-```
-
-Returns 200 + JSON when healthy, 503 + error JSON otherwise. The payload
-includes the backend identifier, vector count, last-sync age, and the rolling
-metrics snapshot. Suitable for UptimeRobot / Pingdom / k6 probes. Public by
-default — gate it via the `mxchat_duckdb_health_public` filter to require
-`manage_options`.
-
-## Verification (end-to-end test)
-
-1. Install on a staging WordPress with MxChat active.
-2. Activate the plugin, set the backend, **Test connection** → ✅.
-3. **Reprocess all posts** → wait for progress bar to reach 100%.
-4. Ask the chatbot a question that matches your KB content.
-5. Inspect `wp-content/debug.log` (with `WP_DEBUG_LOG` on): you should see DuckDB queries; you should **not** see successful Pinecone API responses.
-6. Run `SELECT COUNT(*) FROM mxchat_vectors;` directly in DuckDB (CLI or MotherDuck UI) — count should match the number of synced/reprocessed entries.
+| Doc | What's in it |
+|---|---|
+| [ARCHITECTURE.md](ARCHITECTURE.md) | How the plugin wires into MxChat (flowchart), the query lifecycle (sequence diagram), file layout, design conventions for contributors. |
+| [docs/CONFIGURATION.md](docs/CONFIGURATION.md) | Every option in `mxchat_duckdb_options`, sidecar options, where data is stored, dimension/storage change guards. |
+| [docs/HOOKS.md](docs/HOOKS.md) | Every filter and action the plugin exposes, with signatures and PHP examples. |
+| [docs/CLI.md](docs/CLI.md) | Full `wp mxchat-duckdb` reference with sample output. |
+| [docs/USAGE.md](docs/USAGE.md) | Howtos: async reprocess, Pinecone migration, Parquet backup/restore, INT8 quantization, `/health` endpoint, end-to-end verification. |
+| [CHANGELOG.md](CHANGELOG.md) | Release history. |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | How to file a bug, send a PR, run the test suite. |
 
 ## Roadmap
 
