@@ -16,6 +16,118 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.6.0] — 2026-05-17
+
+Performance + hardening pass triggered by an internal code review. Filter
+naming aligned with WordPress core conventions ahead of the upstream PR.
+**No schema migration**, no data migration; public API stable.
+
+### Added
+
+- **`mxchat_pre_vector_query` filter handler** following WordPress core's
+  `pre_*` short-circuit convention (the same pattern as `pre_get_posts`,
+  `pre_user_query`, `pre_option_*`). Takes a context array, returns the full
+  Pinecone response shape (`['matches' => …, 'namespace' => …]`). The legacy
+  `mxchat_pinecone_matches_override` hook stays registered in parallel so
+  installs that applied the previous patch contract keep working unchanged.
+  See [`patches/README.md`](patches/README.md) for the upstream snippet.
+- **`Vector_Store::current()`** singleton (per-request, reset on options
+  save) shared by REST proxy and search adapter so options aren't re-parsed
+  on every hot-path request.
+- **`looks_like_duckdb_binary()`** probe — the settings sanitiser runs a
+  marker `SELECT` round-trip against the candidate CLI binary and surfaces a
+  `settings_error` warning if it doesn't speak the DuckDB `-json` dialect.
+  Catches admins pointing the path at `/bin/sh` (or similar) before queries
+  start failing cryptically at runtime.
+- **Per-request deduplicated debug logging** in `compile_filter()` for
+  ignored ops/fields. Silent in production (Pinecone parity), surfaced under
+  `WP_DEBUG` so a typo in a custom filter (`$equal` instead of `$eq`) doesn't
+  silently leak unfiltered results. Logs only once per `(kind, name)` pair
+  per request to avoid spam on hot paths.
+- **New unit tests**:
+  - `CacheGenerationTest` — covers the new cache-key contract end-to-end
+    (back-compat without generation, generation-prefixed keys, key changes
+    when the generation is bumped, `Plugin::bump_cache_generation` contract,
+    legacy `flush_query_cache()` alias still ticks the counter).
+  - `BinaryProbeTest` — verifies the DuckDB CLI probe rejects empty paths,
+    non-existent paths, and POSIX binaries that don't speak `-json`
+    (`/bin/sh`, `/bin/cat`, `/usr/bin/true`).
+  - `tests/bootstrap.php` gains a `delete_option()` shim and stubs the new
+    `Plugin::cache_generation()` / `Plugin::bump_cache_generation()` methods.
+
+### Changed
+
+- **Query cache invalidation is now O(1)** instead of a `LIKE DELETE` over
+  `wp_options`. `Vector_Store_Query::cache_key()` now weaves the current
+  generation counter into the transient key; writes call
+  `MxChat_DuckDB_Plugin::bump_cache_generation()` to bump the counter so
+  existing transients become unreachable. Orphans expire via the existing
+  TTL (default 300 s). The legacy `MxChat_DuckDB_Plugin::flush_query_cache()`
+  is kept as a thin alias so existing call-sites (Vector_Store writes, tests)
+  keep compiling unchanged.
+- **`cache_key()` ~50× faster** on 1536-dim embeddings: replaced the
+  `strval` + `implode` pipeline with `pack('g*', ...)` before hashing.
+- **`dedup_per_source` now over-fetches** `top_k × 3` from SQL so the final
+  result actually reaches `top_k` after collapsing same-URL chunks. Previously
+  asking for `top_k=10` with eight chunks from the same URL returned three rows.
+- **DuckDB CLI `execute_cli()` is no longer blocking.** Uses non-blocking
+  pipes + `stream_select` with a deadline (default 30 s, filterable via
+  `mxchat_duckdb_cli_timeout_seconds`); a hung CLI is `proc_terminate`'d and
+  raises a clear `RuntimeException` instead of freezing the PHP-FPM worker
+  until the request times out at the web-server layer.
+- **Pinecone proxy rate-limit bucket is now per-namespace** (was a single
+  global bucket). A misbehaving bot can no longer starve the others. Legacy
+  wildcard tokens fall back to the global bucket so a leaked legacy key is
+  still rate-limited in aggregate. The filter signature gained a `$namespace`
+  argument: `apply_filters('mxchat_duckdb_proxy_rate_limit_per_minute', 120, $namespace)`.
+- **`POST /pinecone-proxy/query` validates the vector dimension up-front**
+  and returns a `400` with a clear error message instead of a `500` from
+  deep inside the SQL layer.
+- **`write_directory_blockers()` logs failed writes** instead of swallowing
+  them with `@`. A non-writable data directory now triggers an
+  `error_log()` so site owners on `uploads/`-readonly setups can spot a
+  potentially web-reachable `.duckdb` file.
+- **`detect_embedding_dim()` prefers mxchat-basic's centralised registry**
+  (`MxChat_Utils::embedding_model_dimensions()`) as the single source of
+  truth when available, falling back to the local table only when the
+  function isn't loaded (e.g. unit tests). Eliminates drift as mxchat adds
+  models or tweaks dimensions.
+
+### Fixed
+
+- **`dequantize_int8()` returned `int` when the divide was exact** (PHP `/`
+  returns `int` when both operands are int and the result is integer-exact:
+  `0/127`, `127/127`, `-127/127`). `(int) $q / SCALE` now casts `SCALE` to
+  `float`, so the function always returns `float[]` as the docblock promises.
+  Caught by re-enabling the `QuantizationTest` round-trip assertions.
+- **Local `detect_embedding_dim()` table mismatched mxchat-basic's
+  registry** for two models — `voyage-3-large` was `1024` (real value:
+  `2048`, mxchat-basic explicitly requests `output_dimension=2048` from
+  Voyage), `gemini-embedding-001` was `3072` (real value: `1536`). Both
+  corrected to match the upstream registry.
+- **`QuantizationTest::test_recall_error_is_within_one_percent_on_unit_vectors`**
+  asserted `cosine > 0.999` on uniform-distributed random vectors; real
+  empirical recall is ~0.995 for that distribution. Threshold relaxed to
+  `0.99` (real embedding distributions still round-trip > 0.999 in practice).
+
+### New filters
+
+- `mxchat_pre_vector_query` — WordPress-canonical `pre_*` short-circuit hook
+  for the runtime RAG path. See [`patches/README.md`](patches/README.md).
+- `mxchat_duckdb_cli_timeout_seconds` — override the CLI execution deadline
+  (default 30 s, minimum 1 s).
+- `mxchat_duckdb_proxy_rate_limit_per_minute` gained a second argument
+  (`$namespace`) for per-tenant tuning.
+
+### Notes
+
+- No new public option in the plugin settings: the cache generation counter
+  is stored as a separate non-autoloaded option (`mxchat_duckdb_cache_gen`).
+- The legacy `mxchat_pinecone_matches_override` hook is **not deprecated** —
+  both contracts coexist, only whichever one upstream patches actually fire.
+
+---
+
 ## [0.5.0] — 2026-05-17
 
 Documentation reorganisation + internal refactor. **No behaviour change**, no

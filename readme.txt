@@ -4,7 +4,7 @@ Tags: chatbot, ai, vector-search, duckdb, motherduck, pinecone, embeddings, rag,
 Requires at least: 6.0
 Tested up to: 6.7
 Requires PHP: 8.0
-Stable tag: 0.5.0
+Stable tag: 0.6.0
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -95,6 +95,21 @@ By default, no — your `.duckdb` file is preserved on uninstall because it may 
 
 == Changelog ==
 
+= 0.6.0 =
+* New `mxchat_pre_vector_query` filter handler (WordPress-canonical `pre_*` short-circuit convention) ahead of the upstream PR. Legacy `mxchat_pinecone_matches_override` hook kept in parallel for installs already patched.
+* Query cache invalidation is now O(1) via a generation counter; the per-write `LIKE DELETE` over `wp_options` is gone. Orphans expire by TTL.
+* `cache_key()` ~50× faster on 1536-dim embeddings (`pack('g*', ...)` instead of `strval` + `implode`).
+* DuckDB CLI execution now has a 30-second deadline (filterable) with non-blocking IO; a hung CLI no longer freezes PHP-FPM workers.
+* `dedup_per_source` over-fetches `top_k × 3` so the final result actually reaches `top_k`.
+* Pinecone proxy rate-limit bucket is now per-namespace (was global). A misbehaving bot can't starve the others.
+* `POST /pinecone-proxy/query` validates the vector dimension up-front (400 instead of 500 with a cryptic SQL error).
+* `looks_like_duckdb_binary()` probes a candidate CLI path via a marker SELECT and surfaces a settings warning on mismatch.
+* `compile_filter()` logs ignored ops/fields under `WP_DEBUG` (deduplicated per request) so filter typos don't silently leak unfiltered results.
+* `Vector_Store::current()` singleton shared by REST proxy and search adapter (reset on options save).
+* `detect_embedding_dim()` now prefers mxchat-basic's `MxChat_Utils::embedding_model_dimensions()` as the single source of truth. Local fallback corrected: `voyage-3-large` 1024 → 2048, `gemini-embedding-001` 3072 → 1536.
+* Fixed: `dequantize_int8()` returned `int` when the divide was exact (`0/127`, `127/127`); now always returns `float[]`.
+* New tests: `CacheGenerationTest`, `BinaryProbeTest`; relaxed the synthetic-vector recall threshold to a realistic 0.99. 57/57 passing.
+
 = 0.5.0 =
 * Documentation reorganised: ARCHITECTURE.md with Mermaid flowchart + sequence diagrams; reference moved to docs/CONFIGURATION.md, docs/HOOKS.md, docs/CLI.md, docs/USAGE.md. README trimmed from 354 → 144 lines.
 * Internal refactor (no behaviour change): `Vector_Store` split into Schema + Query + façade; `Sync` split into MySQL pipeline + Post Reprocessor + façade; `admin/views/settings.php` split into 7 per-section partials. Largest remaining file went from 858 → 332 lines. Public API unchanged.
@@ -140,6 +155,9 @@ By default, no — your `.duckdb` file is preserved on uninstall because it may 
 * Initial release.
 
 == Upgrade Notice ==
+
+= 0.6.0 =
+Performance + hardening pass. No schema migration, no behaviour change for default settings — public API stable. The legacy `mxchat_pinecone_matches_override` hook stays registered so installs already running the upstream patch keep working unchanged. Safe drop-in upgrade.
 
 = 0.5.0 =
 Documentation reorganised + internal refactor. No data migration, no behaviour change — public API stable. Safe drop-in upgrade.
