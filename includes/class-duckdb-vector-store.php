@@ -54,6 +54,28 @@ class MxChat_DuckDB_Vector_Store {
     private MxChat_DuckDB_Vector_Store_Schema $schema;
     private MxChat_DuckDB_Vector_Store_Query $query;
 
+    /** Per-request cached default instance, returned by current(). */
+    private static ?self $current = null;
+
+    /**
+     * Per-request cached store keyed off the current plugin options. Hot REST
+     * handlers (Pinecone proxy, search adapter) call this instead of `new …`
+     * to avoid re-resolving options, re-building the Schema/Query collaborators,
+     * and re-walking the migration short-circuit on every request.
+     *
+     * Mutating options invalidates the cache via reset_current(), which is
+     * fired alongside Connection_Factory::reset_cache() from the options
+     * sanitiser. Tests and CLI paths that want a fresh store can keep using
+     * `new MxChat_DuckDB_Vector_Store()` or pass an explicit connection.
+     */
+    public static function current(): self {
+        return self::$current ??= new self();
+    }
+
+    public static function reset_current(): void {
+        self::$current = null;
+    }
+
     public function __construct(?MxChat_DuckDB_Connection $conn = null) {
         $opts = MxChat_DuckDB_Options::get();
         $this->conn    = $conn ?? MxChat_DuckDB_Connection_Factory::from_options($opts);

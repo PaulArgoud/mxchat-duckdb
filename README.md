@@ -113,7 +113,7 @@ Then activate **MxChat DuckDB / MotherDuck** in the WordPress plugins screen (af
 ## Roadmap
 
 - [x] ~~Import-from-Pinecone tool~~ — shipped in v0.4.0 (`wp mxchat-duckdb migrate-from-pinecone`)
-- [ ] Submit the upstream patch (`mxchat_pinecone_matches_override` filter) to MxChat
+- [ ] Submit the upstream patch (`mxchat_pre_vector_query` filter, WP-canonical `pre_*` convention) to MxChat
 - [ ] Migrate Option B users to Option A automatically once the filter ships
 - [ ] PDF / attachment reprocessing (currently only post types are covered)
 - [ ] Per-bot configuration UI (multi-bot installs)

@@ -100,7 +100,11 @@ class MxChat_DuckDB_Pinecone_Proxy {
         }
 
         $req->set_param('_mxchat_duckdb_auth_ns', $matched_ns);
-        return $this->within_rate_limit();
+        // Per-namespace bucket: a misbehaving bot can't starve the others.
+        // Wildcard (legacy) tokens fall back to the global bucket so a leaked
+        // legacy key is still rate-limited in aggregate.
+        $bucket_ns = $matched_ns === '*' ? '_global' : $matched_ns;
+        return $this->within_rate_limit($bucket_ns);
     }
 
     private static function namespace_from_request(WP_REST_Request $req): string {
@@ -113,15 +117,20 @@ class MxChat_DuckDB_Pinecone_Proxy {
 
     /**
      * Token-bucket-lite: count requests in a 1-minute window via a single
-     * transient. Defaults: 120 req/min total. Override with the filter below.
-     * Search queries are heavy (vector math + HNSW); a misbehaving client
-     * could otherwise saturate CPU.
+     * transient per namespace. Defaults: 120 req/min per namespace. Override
+     * with the filter below. Search queries are heavy (vector math + HNSW);
+     * a misbehaving client could otherwise saturate CPU.
+     *
+     * Namespaced so a runaway bot doesn't starve the others. The filter
+     * receives the namespace so per-tenant ceilings are configurable.
      */
-    private function within_rate_limit(): bool {
-        $max = (int) apply_filters('mxchat_duckdb_proxy_rate_limit_per_minute', 120);
+    private function within_rate_limit(string $namespace = '_global'): bool {
+        $max = (int) apply_filters('mxchat_duckdb_proxy_rate_limit_per_minute', 120, $namespace);
         if ($max <= 0) return true;
 
-        $key = 'mxchat_duckdb_rl_' . gmdate('YmdHi');
+        // Keep the key short and ASCII-safe: hash unusual namespace names.
+        $ns_key = preg_match('/^[a-zA-Z0-9_-]{1,32}$/', $namespace) ? $namespace : substr(md5($namespace), 0, 12);
+        $key = 'mxchat_duckdb_rl_' . $ns_key . '_' . gmdate('YmdHi');
         $count = (int) get_transient($key);
         if ($count >= $max) {
             return false;
@@ -143,12 +152,24 @@ class MxChat_DuckDB_Pinecone_Proxy {
                 'matches'   => [],
                 'namespace' => $namespace,
                 'error'     => 'missing vector',
-            ], 200);
+            ], 400);
+        }
+
+        // Validate the vector dimension up-front so callers get a 400 with a
+        // clear message instead of a 500 from deep inside the SQL layer.
+        $opts = MxChat_DuckDB_Options::get();
+        $expected_dim = (int) ($opts['embedding_dim'] ?? 0);
+        if ($expected_dim > 0 && count($vector) !== $expected_dim) {
+            return new WP_REST_Response([
+                'matches'   => [],
+                'namespace' => $namespace,
+                'error'     => sprintf('vector dimension mismatch: expected %d, got %d', $expected_dim, count($vector)),
+            ], 400);
         }
 
         try {
-            $store = new MxChat_DuckDB_Vector_Store();
-            $matches = $store->query_pinecone_shape($vector, $top_k, $namespace ?: 'default', $filter);
+            $matches = MxChat_DuckDB_Vector_Store::current()
+                ->query_pinecone_shape($vector, $top_k, $namespace ?: 'default', $filter);
             return new WP_REST_Response([
                 'matches'   => $matches,
                 'namespace' => $namespace,
@@ -171,8 +192,8 @@ class MxChat_DuckDB_Pinecone_Proxy {
         }
 
         try {
-            $store = new MxChat_DuckDB_Vector_Store();
-            $vectors = $store->fetch_by_ids($ids, $namespace ?: 'default');
+            $vectors = MxChat_DuckDB_Vector_Store::current()
+                ->fetch_by_ids($ids, $namespace ?: 'default');
             return new WP_REST_Response([
                 'vectors'   => empty($vectors) ? (object) [] : $vectors,
                 'namespace' => $namespace,
@@ -192,8 +213,8 @@ class MxChat_DuckDB_Pinecone_Proxy {
         }
 
         try {
-            $store = new MxChat_DuckDB_Vector_Store();
-            $store->delete_by_ids($ids, $namespace ?: 'default');
+            MxChat_DuckDB_Vector_Store::current()
+                ->delete_by_ids($ids, $namespace ?: 'default');
             return new WP_REST_Response((object) [], 200);
         } catch (\Throwable $e) {
             return new WP_REST_Response(['error' => $e->getMessage()], 500);
@@ -206,8 +227,8 @@ class MxChat_DuckDB_Pinecone_Proxy {
         $limit = isset($body['limit']) ? max(1, min(1000, (int) $body['limit'])) : 100;
 
         try {
-            $store = new MxChat_DuckDB_Vector_Store();
-            $ids = $store->list_ids($namespace ?: 'default', $limit, 0);
+            $ids = MxChat_DuckDB_Vector_Store::current()
+                ->list_ids($namespace ?: 'default', $limit, 0);
             return new WP_REST_Response([
                 'vectors' => array_map(fn($id) => ['id' => $id], $ids),
                 'namespace' => $namespace,
@@ -260,7 +281,7 @@ class MxChat_DuckDB_Pinecone_Proxy {
         }
 
         try {
-            $store = new MxChat_DuckDB_Vector_Store();
+            $store = MxChat_DuckDB_Vector_Store::current();
             $store->ensure_schema();
             $count = $store->upsert($rows);
             return new WP_REST_Response(['upsertedCount' => $count], 200);

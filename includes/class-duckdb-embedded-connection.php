@@ -160,7 +160,12 @@ class MxChat_DuckDB_Embedded_Connection implements MxChat_DuckDB_Connection {
      * Invokes the DuckDB CLI with -json output. Init SQL (if any) is prepended
      * to the script piped through stdin, because CLI sessions are stateless.
      *
-     * @throws RuntimeException on non-zero exit or stderr content.
+     * Uses non-blocking pipes + stream_select with a deadline so that a hung
+     * CLI (file lock, runaway query, broken pipe) doesn't freeze the PHP-FPM
+     * worker indefinitely. The timeout is overridable via the
+     * `mxchat_duckdb_cli_timeout_seconds` filter (default 30s).
+     *
+     * @throws RuntimeException on timeout, non-zero exit, or stderr content.
      */
     private function execute_cli(string $sql): array {
         // Array form of proc_open (PHP 7.4+) — no shell interpolation, no escaping needed.
@@ -188,10 +193,55 @@ class MxChat_DuckDB_Embedded_Connection implements MxChat_DuckDB_Connection {
         fwrite($pipes[0], $script);
         fclose($pipes[0]);
 
-        $stdout = stream_get_contents($pipes[1]);
-        $stderr = stream_get_contents($pipes[2]);
-        fclose($pipes[1]);
-        fclose($pipes[2]);
+        stream_set_blocking($pipes[1], false);
+        stream_set_blocking($pipes[2], false);
+
+        $timeout = max(1, (int) apply_filters('mxchat_duckdb_cli_timeout_seconds', 30));
+        $deadline = microtime(true) + $timeout;
+        $stdout = '';
+        $stderr = '';
+        $open = [$pipes[1], $pipes[2]];
+        $timed_out = false;
+
+        while (!empty($open)) {
+            $remaining = $deadline - microtime(true);
+            if ($remaining <= 0) {
+                $timed_out = true;
+                break;
+            }
+            $read = $open;
+            $write = $except = null;
+            $sec = (int) $remaining;
+            $usec = (int) (($remaining - $sec) * 1_000_000);
+            $ready = @stream_select($read, $write, $except, $sec, $usec);
+            if ($ready === false) break;        // signal interrupt
+            if ($ready === 0)     continue;     // tick, recheck deadline
+            foreach ($read as $stream) {
+                $chunk = fread($stream, 8192);
+                if ($chunk !== false && $chunk !== '') {
+                    if ($stream === $pipes[1]) $stdout .= $chunk;
+                    else                       $stderr .= $chunk;
+                }
+                if (feof($stream)) {
+                    $open = array_filter($open, static fn($s) => $s !== $stream);
+                }
+            }
+        }
+
+        if ($timed_out) {
+            foreach ($open as $s) { if (is_resource($s)) fclose($s); }
+            proc_terminate($proc, 9);
+            proc_close($proc);
+            throw new RuntimeException(sprintf(
+                /* translators: %d = timeout seconds */
+                __('DuckDB CLI timed out after %d seconds.', 'mxchat-duckdb'),
+                $timeout
+            ));
+        }
+
+        foreach ([$pipes[1], $pipes[2]] as $s) {
+            if (is_resource($s)) fclose($s);
+        }
         $exit_code = proc_close($proc);
 
         if ($exit_code !== 0 || !empty($stderr)) {
@@ -203,7 +253,7 @@ class MxChat_DuckDB_Embedded_Connection implements MxChat_DuckDB_Connection {
             ));
         }
 
-        if ($stdout === '' || $stdout === false) {
+        if ($stdout === '') {
             return []; // DDL / non-SELECT
         }
 
@@ -224,6 +274,52 @@ class MxChat_DuckDB_Embedded_Connection implements MxChat_DuckDB_Connection {
             if ($which !== '' && is_executable($which)) return $which;
         }
         return '';
+    }
+
+    /**
+     * Probe whether the given path is genuinely the DuckDB CLI. Runs a
+     * `SELECT 'marker'` over the candidate binary in `-json` mode under a
+     * 2-second cap and checks the marker round-tripped. The `-json` flag is
+     * DuckDB-specific, so any unrelated binary (e.g. /bin/sh pasted by mistake)
+     * fails fast — no false positives. Returns false on any error / timeout;
+     * never throws. Used by the settings sanitiser to surface mis-pointed
+     * paths before queries start failing cryptically at runtime.
+     */
+    public static function looks_like_duckdb_binary(string $path): bool {
+        if ($path === '' || !is_executable($path)) return false;
+
+        $descriptors = [0 => ['pipe', 'r'], 1 => ['pipe', 'w'], 2 => ['pipe', 'w']];
+        $proc = @proc_open([$path, '-json'], $descriptors, $pipes, null, null);
+        if (!is_resource($proc)) return false;
+
+        fwrite($pipes[0], "SELECT 'mxd_duckdb_probe' AS marker;\n");
+        fclose($pipes[0]);
+        stream_set_blocking($pipes[1], false);
+        stream_set_blocking($pipes[2], false);
+
+        $deadline = microtime(true) + 2.0;
+        $stdout = '';
+        while (true) {
+            if (microtime(true) >= $deadline) {
+                proc_terminate($proc, 9);
+                @fclose($pipes[1]); @fclose($pipes[2]);
+                proc_close($proc);
+                return false;
+            }
+            $status = proc_get_status($proc);
+            $chunk = stream_get_contents($pipes[1]);
+            if ($chunk !== false) $stdout .= $chunk;
+            if (!$status['running']) {
+                $rest = stream_get_contents($pipes[1]);
+                if ($rest !== false) $stdout .= $rest;
+                break;
+            }
+            usleep(20_000);
+        }
+        @fclose($pipes[1]); @fclose($pipes[2]);
+        proc_close($proc);
+
+        return str_contains($stdout, 'mxd_duckdb_probe');
     }
 
     /**

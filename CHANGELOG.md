@@ -9,7 +9,7 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Planned
 
-- Submit upstream patch (`mxchat_pinecone_matches_override` filter) to mxchat-basic.
+- Submit upstream patch (`mxchat_pre_vector_query` filter, WP-canonical `pre_*` convention) to mxchat-basic. The legacy `mxchat_pinecone_matches_override` hook stays registered for installs that applied the previous patch contract.
 - PDF / attachment reprocessing.
 - Per-bot configuration UI for multi-bot installs.
 - Built-in cross-encoder reranker (Cohere Rerank / BGE-reranker).

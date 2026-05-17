@@ -49,7 +49,8 @@ class MxChat_DuckDB_Vector_Store_Query {
         }
 
         $opts = MxChat_DuckDB_Options::get();
-        $cache_key = self::cache_key($embedding, $top_k, $bot_id, $filter);
+        $gen = class_exists('MxChat_DuckDB_Plugin') ? MxChat_DuckDB_Plugin::cache_generation() : 0;
+        $cache_key = self::cache_key($embedding, $top_k, $bot_id, $filter, $gen);
 
         if (!empty($opts['query_cache_enabled'])) {
             $cached = get_transient($cache_key);
@@ -62,14 +63,19 @@ class MxChat_DuckDB_Vector_Store_Query {
         $start = microtime(true);
         $where_parts = $this->build_where($bot_id, $filter);
 
+        // When dedup is on, oversample so we still return top_k after collapsing
+        // multiple chunks that share a source_url. 3× is a heuristic — tunable.
+        $dedup_on = !empty($opts['dedup_per_source']);
+        $fetch_k  = $dedup_on ? max($top_k * 3, $top_k + 10) : $top_k;
+
         $query_text = (string) apply_filters('mxchat_duckdb_query_text', '', $bot_id, $filter);
         if (!empty($opts['hybrid_enabled']) && $query_text !== '') {
-            $matches = $this->query_hybrid($embedding, $query_text, $top_k, $where_parts, (float) $opts['hybrid_alpha']);
+            $matches = $this->query_hybrid($embedding, $query_text, $fetch_k, $where_parts, (float) $opts['hybrid_alpha']);
         } else {
-            $matches = $this->query_vector_only($embedding, $top_k, $where_parts);
+            $matches = $this->query_vector_only($embedding, $fetch_k, $where_parts);
         }
 
-        if (!empty($opts['dedup_per_source'])) {
+        if ($dedup_on) {
             $matches = self::dedup_per_source($matches, $top_k);
         }
 
@@ -229,7 +235,10 @@ class MxChat_DuckDB_Vector_Store_Query {
 
         $out = [];
         foreach ($filter as $field => $ops) {
-            if (!isset($allowed_fields[$field]) || !is_array($ops)) continue;
+            if (!isset($allowed_fields[$field]) || !is_array($ops)) {
+                self::log_ignored_filter('field', (string) $field);
+                continue;
+            }
             $col = $allowed_fields[$field];
             foreach ($ops as $op => $val) {
                 switch ($op) {
@@ -245,10 +254,30 @@ class MxChat_DuckDB_Vector_Store_Query {
                         $list = implode(',', array_map([$store, 'literal_for'], $val));
                         $out[] = $col . ($op === '$in' ? ' IN ' : ' NOT IN ') . '(' . $list . ')';
                         break;
+                    default:
+                        self::log_ignored_filter('operator', $field . '.' . (string) $op);
                 }
             }
         }
         return $out;
+    }
+
+    /**
+     * Visibility for ignored filter clauses. Silent in production (Pinecone
+     * parity — unknown ops are dropped to avoid breaking existing call-sites
+     * that pass loose filters), surfaced under WP_DEBUG so a typo in a custom
+     * filter ({$equal} instead of {$eq}) doesn't leak unfiltered results
+     * unnoticed. Deduplicated per request to avoid log spam on hot paths.
+     *
+     * @var array<string,bool>
+     */
+    private static array $logged_ignored = [];
+    private static function log_ignored_filter(string $kind, string $name): void {
+        if (!defined('WP_DEBUG') || !WP_DEBUG) return;
+        $key = $kind . ':' . $name;
+        if (isset(self::$logged_ignored[$key])) return;
+        self::$logged_ignored[$key] = true;
+        error_log('[mxchat-duckdb] ignored filter ' . $kind . ' "' . $name . '" — results returned without this constraint');
     }
 
     /**
@@ -293,9 +322,18 @@ class MxChat_DuckDB_Vector_Store_Query {
         return array_slice($out, 0, $top_k);
     }
 
-    public static function cache_key(array $embedding, int $top_k, string $bot_id, array $filter): string {
-        $h = md5(implode(',', array_map('strval', $embedding)) . '|' . $top_k . '|' . $bot_id . '|' . wp_json_encode($filter));
-        return 'mxd_q_' . $h;
+    /**
+     * Hashes the inputs that uniquely determine the top-K result. The embedding
+     * is packed as 32-bit floats before hashing — orders of magnitude faster
+     * than the old strval/implode path for 1536-dim vectors. When $gen > 0 the
+     * current cache-generation counter is woven into the key so writes can
+     * invalidate the whole namespace in O(1) by bumping the counter instead of
+     * issuing a LIKE DELETE over wp_options (see Plugin::bump_cache_generation).
+     */
+    public static function cache_key(array $embedding, int $top_k, string $bot_id, array $filter, int $gen = 0): string {
+        $packed = @pack('g*', ...array_map('floatval', $embedding));
+        $h = md5($packed . '|' . $top_k . '|' . $bot_id . '|' . wp_json_encode($filter));
+        return 'mxd_q_' . ($gen > 0 ? $gen . '_' : '') . $h;
     }
 
     private static function rows_to_matches(array $rows): array {

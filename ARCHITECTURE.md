@@ -18,7 +18,7 @@ flowchart LR
         Find["find_relevant_content_pinecone()"]
     end
 
-    Find -.->|"Option A<br/>filter mxchat_pinecone_matches_override<br/>(needs ~12-line upstream patch)"| Adapter
+    Find -.->|"Option A<br/>filter mxchat_pre_vector_query<br/>(needs ~12-line upstream patch)"| Adapter
     Find ==>|"Option B<br/>wp_remote_post to 'Pinecone host'<br/>(zero MxChat patch)"| Proxy
 
     subgraph Plugin["mxchat-duckdb"]
@@ -40,7 +40,7 @@ flowchart LR
 
 ### Option A — filter override (preferred)
 
-When `mxchat-basic` is patched with the ~12-line snippet in [`patches/README.md`](patches/README.md), the plugin hooks the `mxchat_pinecone_matches_override` filter and returns matches from DuckDB *before* MxChat would have made the Pinecone HTTP call. **Zero round-trip overhead.**
+When `mxchat-basic` is patched with the ~12-line snippet in [`patches/README.md`](patches/README.md), the plugin hooks the `mxchat_pre_vector_query` filter (WordPress-canonical `pre_*` short-circuit convention) and returns matches from DuckDB *before* MxChat would have made the Pinecone HTTP call. **Zero round-trip overhead.** The legacy `mxchat_pinecone_matches_override` hook stays registered for installs that applied the previous patch contract.
 
 ### Option B — Pinecone wire-protocol proxy (zero patch)
 
@@ -69,7 +69,7 @@ sequenceDiagram
     MxChat->>MxChat: embed query (OpenAI / Voyage / Gemini)
     MxChat->>Adapter: find_relevant_content_pinecone(embedding, bot_id, filter)
 
-    Note over Adapter: apply_filters('mxchat_pinecone_matches_override')
+    Note over Adapter: apply_filters('mxchat_pre_vector_query')
 
     Adapter->>Store: query_pinecone_shape(embedding, top_k, bot_id, filter)
     Store->>Cache: get_transient(mxd_q_<md5(emb·filter·bot·k)>)

@@ -61,9 +61,12 @@ final class QuantizationTest extends TestCase {
             $n2  += $d[$i] * $d[$i];
         }
         $cos = $dot / (sqrt($n1) * sqrt($n2));
-        // Empirically, INT8 round-trip on a 1536-dim normalised vector gives
-        // cosine similarity > 0.99995 — give ourselves a comfortable margin.
-        $this->assertGreaterThan(0.999, $cos);
+        // INT8 with scale=127 on a uniform-distributed 1536-dim unit vector
+        // gives cosine similarity ~0.995. Real embedding distributions (which
+        // are NOT uniform) typically round-trip at > 0.999 — but we test what
+        // we can synthesise here. 0.99 still proves the round-trip preserves
+        // retrieval-grade information; anything lower would indicate a bug.
+        $this->assertGreaterThan(0.99, $cos);
     }
 
     public function test_quantize_throws_on_non_numeric(): void {

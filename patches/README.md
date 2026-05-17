@@ -6,9 +6,13 @@ endpoint we expose. This adds an HTTP round-trip and forces a JSON serialization
 of the embedding vector, which is wasteful for large knowledge bases.
 
 The patch below removes that overhead by giving MxChat a way to short-circuit
-the Pinecone HTTP call with a PHP filter (`mxchat_pinecone_matches_override`).
-When the filter returns a non-null array, MxChat uses it directly and never
-fires `wp_remote_post()`.
+the Pinecone HTTP call with a PHP filter (`mxchat_pre_vector_query`). When the
+filter returns an array, MxChat uses it directly and never fires
+`wp_remote_post()`.
+
+The filter follows WordPress core's `pre_*` short-circuit convention (the same
+pattern used by `pre_get_posts`, `pre_user_query`, `pre_option_*`): return
+`null` for default behaviour, return a value to bypass the rest of the function.
 
 ## What to change
 
@@ -17,24 +21,22 @@ File: `mxchat-basic/includes/class-mxchat-integrator.php`
 Find the function `find_relevant_content_pinecone()` (around line 5211). Look for
 the block that calls `wp_remote_post($api_endpoint, ...)` (around line 5287).
 
-**Wrap the HTTP block in an `else` branch** preceded by the override filter:
+**Wrap the HTTP block in an `else` branch** preceded by the filter call:
 
 ```php
 // ──────────────── BEGIN PATCH ────────────────
-// Allow companion plugins (e.g. mxchat-duckdb) to substitute the Pinecone HTTP
-// call with a native implementation. Returning an array short-circuits the
-// HTTP request entirely. Returning null falls through to Pinecone as normal.
-$override_matches = apply_filters(
-    'mxchat_pinecone_matches_override',
-    null,
-    $user_embedding,
-    $bot_id,
-    $namespace,
-    $request_body
-);
+// Let companion plugins (e.g. mxchat-duckdb) short-circuit the Pinecone HTTP
+// call. Returning an array bypasses the network entirely; returning null
+// falls through to the existing wp_remote_post() behavior.
+$pre = apply_filters('mxchat_pre_vector_query', null, array(
+    'vector'    => $user_embedding,
+    'top_k'     => $request_body['topK'],
+    'namespace' => $namespace,
+    'bot_id'    => $bot_id,
+));
 
-if (is_array($override_matches)) {
-    $results = ['matches' => $override_matches, 'namespace' => $namespace];
+if (is_array($pre)) {
+    $results = $pre; // Expected shape: ['matches' => [...]]
 } else {
 // ───────────────── END PATCH (top) ────────────
 
@@ -84,6 +86,14 @@ The total change is ~12 lines added (a filter call + an `if/else` wrapper).
 Everything downstream — chunk reassembly, role checks, similarity analysis,
 RAG context assembly — is reused as-is.
 
+## Contract
+
+| Filter return | Effect |
+|---|---|
+| `null` (default) | Existing behavior: `wp_remote_post()` to Pinecone runs as before. |
+| `['matches' => [...]]` | Short-circuit: the array is used as the Pinecone response. Each match must follow the Pinecone shape: `{id, score, metadata: {…}}`. |
+| Anything else | Treated as `null` (defensive fall-through to HTTP). |
+
 ## How to verify the patch is active
 
 After applying, open the admin page **MxChat → DuckDB / MotherDuck** and click
@@ -93,8 +103,23 @@ After applying, open the admin page **MxChat → DuckDB / MotherDuck** and click
 filter returns matches. If it does appear, the patch is not active and the
 plugin is operating via the Option B proxy path.
 
+## Backward compatibility
+
+The companion plugin also hooks the legacy `mxchat_pinecone_matches_override`
+filter (older patch contract — positional args, matches array returned
+directly). Both hooks coexist safely: only whichever one the upstream patch
+actually calls will fire. Installs that applied the previous patch keep
+working without any change on their side.
+
 ## Submitting upstream
 
-If MxChat maintainers accept this filter, the plugin will detect it automatically
-and prefer Option A on every install. We would then deprecate the Option B path
-once a minimum supported MxChat version is established.
+If MxChat maintainers accept this filter, the plugin will detect it
+automatically and prefer Option A on every install. The same filter
+naming convention naturally extends to the four admin-side `POST /query`
+call-sites in `admin/class-pinecone-manager.php` —
+`mxchat_semantic_search_pinecone()`, `mxchat_text_search_fallback()`,
+`mxchat_query_based_list()` and `mxchat_get_recent_entries_safe()` — and to
+sibling `mxchat_pre_vector_fetch` / `mxchat_pre_vector_delete` hooks for the
+rest of the Pinecone wire protocol. Once a minimum supported MxChat version
+ships the hook, the Option B REST emulation layer in `mxchat-duckdb` can be
+deprecated.

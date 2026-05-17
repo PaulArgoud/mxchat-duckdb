@@ -54,9 +54,13 @@ class MxChat_DuckDB_Quantization {
      * @return float[] approximate floats in roughly [-1, 1]
      */
     public static function dequantize_int8(array $quantized): array {
+        // Cast SCALE to float so PHP's `/` operator doesn't return an int when
+        // the division happens to be exact (0/127, 127/127, -127/127). This
+        // matters because downstream code and tests assertSame against floats.
+        $scale = (float) self::SCALE;
         $out = [];
         foreach ($quantized as $q) {
-            $out[] = ((int) $q) / self::SCALE;
+            $out[] = (int) $q / $scale;
         }
         return $out;
     }

@@ -38,6 +38,12 @@ if (!function_exists('update_option')) {
         return true;
     }
 }
+if (!function_exists('delete_option')) {
+    function delete_option($name) {
+        unset($GLOBALS['__test_options'][$name]);
+        return true;
+    }
+}
 if (!function_exists('get_transient')) {
     function get_transient($key) {
         return $GLOBALS['__test_transients'][$key] ?? false;
@@ -105,8 +111,16 @@ require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-sync.php';
 if (!class_exists('MxChat_DuckDB_Plugin')) {
     class MxChat_DuckDB_Plugin {
         public static array $flushed = [];
+        public static int $cache_gen = 1;
         public static function flush_query_cache(): void {
             self::$flushed[] = microtime(true);
+            self::bump_cache_generation();
+        }
+        public static function cache_generation(): int {
+            return self::$cache_gen;
+        }
+        public static function bump_cache_generation(): void {
+            self::$cache_gen++;
         }
     }
 }

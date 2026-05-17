@@ -12,9 +12,12 @@
  * Requires at least: 6.0
  *
  * Companion plugin to MxChat (https://mxchat.ai/). Provides two integration paths:
- *   - Option A (preferred): hooks the `mxchat_pinecone_matches_override` filter
- *     to short-circuit Pinecone HTTP calls with native DuckDB SQL queries.
- *     Requires a small patch to mxchat-basic (see patches/ folder).
+ *   - Option A (preferred): hooks the `mxchat_pre_vector_query` filter
+ *     (WordPress-canonical `pre_*` short-circuit convention) to bypass the
+ *     Pinecone HTTP call with native DuckDB SQL queries. The legacy
+ *     `mxchat_pinecone_matches_override` filter is also hooked for installs
+ *     that applied the older patch. Requires a small patch to mxchat-basic
+ *     (see patches/ folder).
  *   - Option B (no patch needed): exposes a REST endpoint that emulates the
  *     Pinecone wire protocol; mxchat thinks it's talking to Pinecone.
  */
@@ -110,14 +113,31 @@ class MxChat_DuckDB_Plugin {
         }
     }
 
+    const CACHE_GEN_OPTION = 'mxchat_duckdb_cache_gen';
+
     /**
-     * Wipe the per-request query result cache. Called by writes (upsert/delete)
-     * to avoid serving stale top-K from the transient layer after a change.
+     * Current cache generation. Read on the hot path by Vector_Store_Query to
+     * compose the transient key; an upsert/delete bumps it via
+     * bump_cache_generation() so existing transients become unreachable in
+     * O(1) instead of a LIKE DELETE over wp_options. Orphans expire by TTL.
+     */
+    public static function cache_generation(): int {
+        $g = (int) get_option(self::CACHE_GEN_OPTION, 1);
+        return $g > 0 ? $g : 1;
+    }
+
+    public static function bump_cache_generation(): void {
+        $next = self::cache_generation() + 1;
+        update_option(self::CACHE_GEN_OPTION, $next, false);
+    }
+
+    /**
+     * Back-compat alias kept so existing call-sites (Vector_Store writes,
+     * tests) keep compiling. New code should call bump_cache_generation()
+     * directly — the semantics are identical.
      */
     public static function flush_query_cache(): void {
-        global $wpdb;
-        $wpdb->query("DELETE FROM {$wpdb->options} WHERE option_name LIKE '\\_transient\\_mxd\\_q\\_%' ESCAPE '\\\\'");
-        $wpdb->query("DELETE FROM {$wpdb->options} WHERE option_name LIKE '\\_transient\\_timeout\\_mxd\\_q\\_%' ESCAPE '\\\\'");
+        self::bump_cache_generation();
     }
 
     public static function activate() {
