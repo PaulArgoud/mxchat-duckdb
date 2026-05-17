@@ -15,7 +15,7 @@ jobs:
       matrix:
         php: ['8.0', '8.1', '8.2', '8.3', '8.4']
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: shivammathur/setup-php@v2
         with:
           php-version: ${{ matrix.php }}
@@ -33,7 +33,7 @@ jobs:
     name: i18n catalog check
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - name: Install gettext
         run: sudo apt-get update && sudo apt-get install -y gettext
       - name: Validate fr_FR.po
@@ -42,11 +42,12 @@ jobs:
   phpstan:
     name: PHPStan
     runs-on: ubuntu-latest
-    # Stays continue-on-error until level 6 with the new szepeviktor/phpstan-wordpress
-    # stubs is confirmed green on a real CI run; bump + drop in a follow-up PR.
-    continue-on-error: true
+    # Was continue-on-error while we onboarded szepeviktor/phpstan-wordpress;
+    # the first run after the bump (25995890134) was silent at level 6, so the
+    # flag is dropped — PHPStan now blocks the build like the other jobs. The
+    # path to level 7/8 is still tracked in phpstan.neon.dist.
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: shivammathur/setup-php@v2
         with:
           php-version: '8.2'
@@ -65,7 +66,7 @@ jobs:
       matrix:
         php: ['8.1', '8.2', '8.3', '8.4']
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: shivammathur/setup-php@v2
         with:
           php-version: ${{ matrix.php }}
@@ -80,7 +81,7 @@ jobs:
     name: composer audit
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
       - uses: shivammathur/setup-php@v2
         with:
           php-version: '8.3'
