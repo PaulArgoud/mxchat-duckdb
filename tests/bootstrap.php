@@ -157,6 +157,209 @@ if (!function_exists('wp_generate_password')) {
         return bin2hex(random_bytes((int) ceil($length / 2)));
     }
 }
+if (!function_exists('wp_doing_cron')) {
+    function wp_doing_cron() {
+        return defined('DOING_CRON') && DOING_CRON;
+    }
+}
+if (!function_exists('wp_strip_all_tags')) {
+    function wp_strip_all_tags($string, $remove_breaks = false) {
+        $string = (string) $string;
+        $string = preg_replace('@<(script|style)[^>]*?>.*?</\\1>@si', '', $string);
+        $string = strip_tags($string);
+        if ($remove_breaks) {
+            $string = preg_replace('/[\r\n\t ]+/', ' ', $string);
+        }
+        return trim($string);
+    }
+}
+if (!function_exists('get_post')) {
+    function get_post($id) {
+        return $GLOBALS['__test_posts'][(int) $id] ?? null;
+    }
+}
+if (!function_exists('get_permalink')) {
+    function get_permalink($id) {
+        return $GLOBALS['__test_permalinks'][(int) $id] ?? false;
+    }
+}
+
+// Minimal WP_Query stub — covers ->posts (array), ->found_posts (int).
+if (!class_exists('WP_Query')) {
+    class WP_Query {
+        public array $posts = [];
+        public int $found_posts = 0;
+        public function __construct(array $args = []) {
+            $matcher = $GLOBALS['__test_wp_query_matcher'] ?? null;
+            if (is_callable($matcher)) {
+                $result = $matcher($args);
+                $this->posts       = $result['posts']       ?? [];
+                $this->found_posts = $result['found_posts'] ?? count($this->posts);
+            }
+        }
+    }
+}
+
+// WP_Post stub — used by post_reprocessor and other places that need a
+// post object. Tests just construct via (object)['…' => …]; this class
+// gives a real type hint to function signatures that require WP_Post.
+if (!class_exists('WP_Post')) {
+    class WP_Post {
+        public int $ID = 0;
+        public string $post_title = '';
+        public string $post_content = '';
+        public string $post_type = 'post';
+        public string $post_status = 'publish';
+        public function __construct(array $props = []) {
+            foreach ($props as $k => $v) { $this->$k = $v; }
+        }
+    }
+}
+
+// Action Scheduler shims. Tests register a fake "queue" in
+// $GLOBALS['__test_as_queue'] and assertions look at it.
+if (!function_exists('as_enqueue_async_action')) {
+    function as_enqueue_async_action($hook, $args = [], $group = '') {
+        if (!isset($GLOBALS['__test_as_queue'])) $GLOBALS['__test_as_queue'] = [];
+        $id = count($GLOBALS['__test_as_queue']) + 1;
+        $GLOBALS['__test_as_queue'][$id] = compact('hook', 'args', 'group') + ['status' => 'pending'];
+        return $id;
+    }
+}
+if (!function_exists('as_get_scheduled_actions')) {
+    function as_get_scheduled_actions(array $args = [], $return = '') {
+        $queue = $GLOBALS['__test_as_queue'] ?? [];
+        $filtered = array_filter($queue, function ($a) use ($args) {
+            if (isset($args['hook'])   && $a['hook']   !== $args['hook'])   return false;
+            if (isset($args['status']) && $a['status'] !== $args['status']) return false;
+            if (isset($args['args'])   && $a['args']   !== $args['args'])   return false;
+            return true;
+        });
+        if ($return === 'ids')   return array_keys($filtered);
+        if ($return === 'count') return count($filtered);
+        return $filtered;
+    }
+}
+if (!function_exists('as_unschedule_all_actions')) {
+    function as_unschedule_all_actions($hook = '', $args = [], $group = '') {
+        $count = 0;
+        $queue = $GLOBALS['__test_as_queue'] ?? [];
+        foreach ($queue as $id => $a) {
+            if (($hook === '' || $a['hook'] === $hook) && $a['status'] === 'pending') {
+                $GLOBALS['__test_as_queue'][$id]['status'] = 'cancelled';
+                $count++;
+            }
+        }
+        return $count;
+    }
+}
+
+// Minimal MxChat_Utils stub for post_reprocessor — production code calls
+// submit_content_to_db() which we record into a log so the test can verify
+// (and optionally fail via WP_Error).
+if (!class_exists('MxChat_Utils')) {
+    class MxChat_Utils {
+        public static array $submit_calls = [];
+        /** @var mixed Set to a WP_Error to force a failure path. */
+        public static $submit_returns = true;
+        public static function submit_content_to_db(
+            $content, $source_url, $api_key, $vector_id = null,
+            $bot_id = 'default', $content_type = 'content'
+        ) {
+            self::$submit_calls[] = compact('content', 'source_url', 'api_key', 'vector_id', 'bot_id', 'content_type');
+            return self::$submit_returns;
+        }
+        public static function embedding_model_dimensions($model) {
+            $known = [
+                'text-embedding-ada-002' => 1536,
+                'text-embedding-3-small' => 1536,
+                'text-embedding-3-large' => 3072,
+                'voyage-3-large'         => 2048,
+                'gemini-embedding-001'   => 1536,
+            ];
+            return $known[$model] ?? 0;
+        }
+    }
+}
+
+// Minimal WP_Error stub — production code checks is_wp_error($result).
+if (!class_exists('WP_Error')) {
+    class WP_Error {
+        public string $message;
+        public function __construct($code = '', string $message = '') {
+            $this->message = $message;
+        }
+        public function get_error_message(): string { return $this->message; }
+    }
+}
+if (!function_exists('is_wp_error')) {
+    function is_wp_error($thing) { return $thing instanceof WP_Error; }
+}
+
+// Minimal AJAX response helpers — production handlers call wp_send_json_*
+// which would normally die(). For tests we capture the payload and throw a
+// recognisable exception so the caller can assert.
+if (!class_exists('MxChat_Test_AjaxResponseException')) {
+    class MxChat_Test_AjaxResponseException extends Exception {
+        public $payload;
+        public bool $success;
+        public ?int $status_code;
+        public function __construct(bool $success, $payload, ?int $status_code = null) {
+            // Use the payload's message field as the exception message when
+            // available, so production code that re-throws via
+            // `catch (\Throwable $e) { wp_send_json_error(['message' => $e->getMessage()]) }`
+            // still surfaces the original message to the test.
+            $msg = 'ajax response (' . ($success ? 'success' : 'error') . ')';
+            if (is_array($payload) && isset($payload['message']) && is_scalar($payload['message'])) {
+                $msg = (string) $payload['message'];
+            }
+            parent::__construct($msg);
+            $this->success     = $success;
+            $this->payload     = $payload;
+            $this->status_code = $status_code;
+        }
+    }
+}
+if (!function_exists('wp_send_json_success')) {
+    function wp_send_json_success($data = null, $status_code = null) {
+        // The first response wins. Production handlers wrap their work in
+        // `try { …; wp_send_json_success() } catch (\Throwable $e) {
+        //     wp_send_json_error($e->getMessage()) }`. Our shim's
+        // exception is itself a Throwable and gets caught by that block,
+        // which then "reports the error" with our success-shim exception's
+        // message — wrecking the test. Stashing the first response in a
+        // global lets the test see the original intent regardless of what
+        // production does with the resulting exception.
+        if (!isset($GLOBALS['__test_ajax_response'])) {
+            $GLOBALS['__test_ajax_response'] = ['success' => true, 'payload' => $data, 'status' => $status_code];
+        }
+        throw new MxChat_Test_AjaxResponseException(true, $data, $status_code);
+    }
+}
+if (!function_exists('wp_send_json_error')) {
+    function wp_send_json_error($data = null, $status_code = null) {
+        if (!isset($GLOBALS['__test_ajax_response'])) {
+            $GLOBALS['__test_ajax_response'] = ['success' => false, 'payload' => $data, 'status' => $status_code];
+        }
+        throw new MxChat_Test_AjaxResponseException(false, $data, $status_code);
+    }
+}
+if (!function_exists('check_ajax_referer')) {
+    function check_ajax_referer($action, $query_arg = '_ajax_nonce', $die = true) {
+        $nonce = $_POST[$query_arg] ?? $_REQUEST[$query_arg] ?? '';
+        $valid = $GLOBALS['__test_valid_nonces'] ?? [];
+        $ok = isset($valid[$nonce]) && $valid[$nonce] === $action;
+        if (!$ok && $die) {
+            // Mimic the wp_send_json_error shim's "first response wins"
+            // behaviour so AdminAjaxTest::captureAjaxResponse() can see it.
+            if (!isset($GLOBALS['__test_ajax_response'])) {
+                $GLOBALS['__test_ajax_response'] = ['success' => false, 'payload' => ['code' => 'invalid_nonce'], 'status' => 403];
+            }
+            throw new MxChat_Test_AjaxResponseException(false, ['code' => 'invalid_nonce'], 403);
+        }
+        return $ok;
+    }
+}
 
 // Nonce shim — tests set $GLOBALS['__test_valid_nonces'] = ['nonce_value' => 'action_name'].
 if (!function_exists('wp_verify_nonce')) {
@@ -309,6 +512,7 @@ require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-metrics.php';
 require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-quantization.php';
 require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-connection.php';
 require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-embedded-connection.php';
+require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-motherduck-connection.php';
 require_once MXCHAT_DUCKDB_DIR . 'includes/trait-duckdb-sql-helpers.php';
 require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-vector-store-schema.php';
 require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-vector-store-query.php';
@@ -321,6 +525,8 @@ require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-pinecone-proxy.php';
 require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-pinecone-migrator.php';
 require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-compactor.php';
 require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-health.php';
+require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-async-reprocess.php';
+require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-admin.php';
 
 // Stub the Plugin class so Vector_Store::upsert()/delete_*() can call
 // MxChat_DuckDB_Plugin::flush_query_cache() without booting the full plugin.
