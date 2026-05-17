@@ -206,6 +206,7 @@ require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-post-reprocessor.php';
 require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-sync.php';
 require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-search-adapter.php';
 require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-pinecone-proxy.php';
+require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-pinecone-migrator.php';
 
 // Stub the Plugin class so Vector_Store::upsert()/delete_*() can call
 // MxChat_DuckDB_Plugin::flush_query_cache() without booting the full plugin.
