@@ -1,0 +1,24 @@
+{
+    "name": "paulargoud/mxchat-duckdb",
+    "description": "WordPress companion plugin: DuckDB / MotherDuck vector store for MxChat.",
+    "type": "wordpress-plugin",
+    "license": "GPL-2.0-or-later",
+    "authors": [
+        { "name": "Paul Argoud", "email": "paul@argoud.net" }
+    ],
+    "require": {
+        "php": ">=8.0"
+    },
+    "autoload": {
+        "classmap": [
+            "includes/"
+        ],
+        "files": [
+            "includes/class-duckdb-cli.php"
+        ]
+    },
+    "config": {
+        "optimize-autoloader": true,
+        "sort-packages": true
+    }
+}

@@ -1,0 +1,329 @@
+# Copyright (C) 2026 Paul Argoud
+# This file is distributed under the GPL v2 or later license.
+msgid ""
+msgstr ""
+"Project-Id-Version: MxChat DuckDB / MotherDuck 0.2.0\n"
+"Report-Msgid-Bugs-To: https://github.com/paulargoud/mxchat-duckdb/issues\n"
+"POT-Creation-Date: 2026-05-17 00:00+0000\n"
+"PO-Revision-Date: YEAR-MO-DA HO:MI+ZONE\n"
+"Last-Translator: FULL NAME <EMAIL@ADDRESS>\n"
+"Language-Team: LANGUAGE <LL@li.org>\n"
+"Language: \n"
+"MIME-Version: 1.0\n"
+"Content-Type: text/plain; charset=UTF-8\n"
+"Content-Transfer-Encoding: 8bit\n"
+"X-Domain: mxchat-duckdb\n"
+
+#: mxchat-duckdb.php
+msgid "The MxChat plugin (mxchat-basic) must be installed and activated for this companion plugin to work."
+msgstr ""
+
+#: includes/class-duckdb-motherduck-connection.php
+msgid "MotherDuck token is not configured."
+msgstr ""
+
+#: includes/class-duckdb-motherduck-connection.php
+msgid "Invalid MotherDuck database name (letters, digits and underscore only)."
+msgstr ""
+
+#: includes/class-duckdb-embedded-connection.php
+msgid "Embedded DuckDB mode: neither the PHP duckdb extension nor the CLI binary is available. Install ext-duckdb (PECL) or set the binary path in the plugin settings."
+msgstr ""
+
+#: includes/class-duckdb-embedded-connection.php
+msgid "DuckDB native extension error: "
+msgstr ""
+
+#: includes/class-duckdb-embedded-connection.php
+msgid "Failed to launch the DuckDB CLI binary."
+msgstr ""
+
+#: includes/class-duckdb-embedded-connection.php
+#. translators: 1: exit code, 2: stderr content
+msgid "DuckDB CLI failed (exit code %1$d): %2$s"
+msgstr ""
+
+#: includes/class-duckdb-embedded-connection.php
+msgid "no error output"
+msgstr ""
+
+#: includes/class-duckdb-embedded-connection.php
+msgid "Non-numeric value in array parameter: "
+msgstr ""
+
+#: includes/class-duckdb-vector-store.php
+#. translators: 1: vector id, 2: expected dim, 3: actual dim
+msgid "Embedding dimension mismatch on upsert: vector_id=%1$s, expected %2$d, got %3$d."
+msgstr ""
+
+#: includes/class-duckdb-vector-store.php
+#. translators: 1: expected dim, 2: actual dim
+msgid "Embedding dimension mismatch: expected %1$d, got %2$d. Update embedding_dim or re-sync."
+msgstr ""
+
+#: includes/class-duckdb-vector-store.php
+#. translators: 1: index, 2: PHP type name
+msgid "Non-numeric embedding component at index %1$d (type %2$s). Refusing to write a corrupted vector."
+msgstr ""
+
+#: includes/class-duckdb-options.php
+#. translators: 1: row count, 2: current dim, 3: requested dim
+msgid "Cannot change the embedding dimension: the table already contains %1$d vectors at dimension %2$d. Wipe the table and re-sync to adopt %3$d."
+msgstr ""
+
+#: includes/class-duckdb-sync.php
+msgid "MxChat_Utils is not available — is mxchat-basic activated?"
+msgstr ""
+
+#: includes/class-duckdb-sync.php
+msgid "No embedding API key configured in MxChat."
+msgstr ""
+
+#: includes/class-duckdb-search-adapter.php
+#. translators: %s = underlying error message
+msgid "vector search error — %s"
+msgstr ""
+
+#: includes/class-duckdb-admin.php
+msgid "DuckDB / MotherDuck"
+msgstr ""
+
+#: includes/class-duckdb-admin.php
+msgid "MxChat DuckDB"
+msgstr ""
+
+#: includes/class-duckdb-admin.php
+msgid "Testing…"
+msgstr ""
+
+#: includes/class-duckdb-admin.php
+msgid "Syncing…"
+msgstr ""
+
+#: includes/class-duckdb-admin.php
+msgid "OK"
+msgstr ""
+
+#: includes/class-duckdb-admin.php
+msgid "Error"
+msgstr ""
+
+#: includes/class-duckdb-admin.php
+msgid "Sync complete"
+msgstr ""
+
+#: includes/class-duckdb-admin.php
+#. translators: 1: done count, 2: total count
+msgid "Reprocessing %1$d / %2$d…"
+msgstr ""
+
+#: includes/class-duckdb-admin.php
+#. translators: 1: processed count, 2: failed count
+msgid "Reprocess complete: %1$d processed, %2$d failed."
+msgstr ""
+
+#: includes/class-duckdb-admin.php
+msgid "This will call the embedding API for every post (potential cost). Continue?"
+msgstr ""
+
+#: includes/class-duckdb-admin.php
+msgid "Insufficient permissions."
+msgstr ""
+
+#: includes/class-duckdb-admin.php
+msgid "Ping failed."
+msgstr ""
+
+#: admin/views/settings.php
+msgid "MxChat — DuckDB / MotherDuck"
+msgstr ""
+
+#: admin/views/settings.php
+msgid "Replaces Pinecone with DuckDB (embedded) or MotherDuck (cloud) as the vector store. The plugin registers itself with MxChat as an alternative Pinecone backend."
+msgstr ""
+
+#: admin/views/settings.php
+msgid "Last error:"
+msgstr ""
+
+#: admin/views/settings.php
+msgid "Performance:"
+msgstr ""
+
+#: admin/views/settings.php
+msgid "the PHP duckdb extension is not loaded. The plugin falls back to the duckdb CLI binary, which adds 50–200 ms of process-spawn latency per query."
+msgstr ""
+
+#: admin/views/settings.php
+msgid "MotherDuck + CLI mode:"
+msgstr ""
+
+#: admin/views/settings.php
+msgid "each query re-runs the MotherDuck ATTACH (network handshake + token validation). Expect 1–3 s of overhead per call. For production, install the PECL duckdb extension."
+msgstr ""
+
+#: admin/views/settings.php
+msgid "Activation"
+msgstr ""
+
+#: admin/views/settings.php
+msgid "Enable DuckDB / MotherDuck"
+msgstr ""
+
+#: admin/views/settings.php
+msgid "Enabled"
+msgstr ""
+
+#: admin/views/settings.php
+msgid "When enabled, MxChat uses this plugin as its vector store (in place of Pinecone). When disabled, MxChat falls back to its default behaviour."
+msgstr ""
+
+#: admin/views/settings.php
+msgid "Backend"
+msgstr ""
+
+#: admin/views/settings.php
+msgid "MotherDuck (cloud, via ATTACH)"
+msgstr ""
+
+#: admin/views/settings.php
+msgid "DuckDB embedded (local file)"
+msgstr ""
+
+#: admin/views/settings.php
+msgid "MotherDuck"
+msgstr ""
+
+#: admin/views/settings.php
+msgid "Token"
+msgstr ""
+
+#: admin/views/settings.php
+msgid "MotherDuck token (from <a href=\"https://app.motherduck.com\" target=\"_blank\" rel=\"noopener\">app.motherduck.com</a>)."
+msgstr ""
+
+#: admin/views/settings.php
+msgid "Database"
+msgstr ""
+
+#: admin/views/settings.php
+msgid "DuckDB embedded"
+msgstr ""
+
+#: admin/views/settings.php
+msgid "Path to the .duckdb file"
+msgstr ""
+
+#: admin/views/settings.php
+msgid "Leave empty to use the default wp-content/uploads/mxchat-duckdb-private/ directory (protected by auto-generated .htaccess / web.config)."
+msgstr ""
+
+#: admin/views/settings.php
+msgid "DuckDB CLI binary"
+msgstr ""
+
+#: admin/views/settings.php
+msgid "Used when the PHP duckdb extension is not installed. Leave empty for autodetection."
+msgstr ""
+
+#: admin/views/settings.php
+msgid "Vector schema"
+msgstr ""
+
+#: admin/views/settings.php
+msgid "Embedding dimension"
+msgstr ""
+
+#: admin/views/settings.php
+#. translators: %d = detected dimension
+msgid "MxChat is currently using dimension %d. This must match the active embedding model."
+msgstr ""
+
+#: admin/views/settings.php
+msgid "Metric"
+msgstr ""
+
+#: admin/views/settings.php
+msgid "MxChat uses cosine similarity — keep cosine unless you have a specific reason."
+msgstr ""
+
+#: admin/views/settings.php
+msgid "HNSW index"
+msgstr ""
+
+#: admin/views/settings.php
+msgid "Create an HNSW index over the embedding column (recommended for > 10k entries)"
+msgstr ""
+
+#: admin/views/settings.php
+msgid "Default top-K"
+msgstr ""
+
+#: admin/views/settings.php
+msgid "Save"
+msgstr ""
+
+#: admin/views/settings.php
+msgid "Diagnostics"
+msgstr ""
+
+#: admin/views/settings.php
+msgid "Test connection"
+msgstr ""
+
+#: admin/views/settings.php
+msgid "Sync MySQL → DuckDB"
+msgstr ""
+
+#: admin/views/settings.php
+msgid "Reprocess all posts"
+msgstr ""
+
+#: admin/views/settings.php
+msgid "copies the wp_mxchat_system_prompt_content table into DuckDB. Useful only if MxChat is running in MySQL mode and the table contains embeddings."
+msgstr ""
+
+#: admin/views/settings.php
+msgid "walks WordPress posts/pages and re-runs the MxChat ingestion pipeline (chunking + embedding + upsert). Recommended for Pinecone-only installs. Calls the configured embedding API (OpenAI / Voyage / Gemini) — potential cost."
+msgstr ""
+
+#: admin/views/settings.php
+msgid "Post types to reprocess (comma-separated):"
+msgstr ""
+
+#: admin/views/settings.php
+msgid "Vectors in DuckDB"
+msgstr ""
+
+#: admin/views/settings.php
+msgid "Last sync"
+msgstr ""
+
+#: admin/views/settings.php
+#. translators: 1: date/time, 2: vector count
+msgid "%1$s (%2$d vectors)"
+msgstr ""
+
+#: admin/views/settings.php
+msgid "Never"
+msgstr ""
+
+#: admin/views/settings.php
+msgid "Active backend"
+msgstr ""
+
+#: admin/views/settings.php
+msgid "Pinecone proxy endpoint (Option B)"
+msgstr ""
+
+#: admin/views/settings.php
+msgid "These values are auto-injected into MxChat via the mxchat_get_bot_pinecone_config filter. No action required."
+msgstr ""
+
+#: admin/views/settings.php
+msgid "Host (for MxChat)"
+msgstr ""
+
+#: admin/views/settings.php
+msgid "Api-Key"
+msgstr ""

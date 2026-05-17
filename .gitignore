@@ -1,0 +1,30 @@
+# Composer
+/vendor/
+composer.lock
+
+# OS / IDE
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Local DuckDB data (in case someone puts a copy at the repo root)
+*.duckdb
+*.duckdb.wal
+*.duckdb.tmp
+
+# WP-CLI cache, local build artifacts
+.phpunit.result.cache
+/build/
+/dist/
+
+# Translations: ship the .pot and .po, compile .mo on install if needed.
+# We DO commit the .mo here because the plugin is distributed as a zip
+# and end users won't run msgfmt. Uncomment to ignore instead:
+# /languages/*.mo
+
+# Logs
+*.log
+debug.log
