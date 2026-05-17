@@ -142,6 +142,21 @@ if (!function_exists('current_user_can')) {
         return $GLOBALS['__test_current_user_can'] ?? true;
     }
 }
+if (!function_exists('register_rest_route')) {
+    function register_rest_route($namespace, $route, $args = [], $override = false) {
+        $key = $namespace . $route;
+        if (!isset($GLOBALS['__test_rest_routes'])) {
+            $GLOBALS['__test_rest_routes'] = [];
+        }
+        $GLOBALS['__test_rest_routes'][$key] = $args;
+        return true;
+    }
+}
+if (!function_exists('wp_generate_password')) {
+    function wp_generate_password($length = 12, $special_chars = true, $extra_special_chars = false) {
+        return bin2hex(random_bytes((int) ceil($length / 2)));
+    }
+}
 
 // Nonce shim — tests set $GLOBALS['__test_valid_nonces'] = ['nonce_value' => 'action_name'].
 if (!function_exists('wp_verify_nonce')) {
@@ -305,6 +320,7 @@ require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-search-adapter.php';
 require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-pinecone-proxy.php';
 require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-pinecone-migrator.php';
 require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-compactor.php';
+require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-health.php';
 
 // Stub the Plugin class so Vector_Store::upsert()/delete_*() can call
 // MxChat_DuckDB_Plugin::flush_query_cache() without booting the full plugin.
