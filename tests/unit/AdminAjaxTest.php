@@ -30,28 +30,11 @@ final class AdminAjaxTest extends TestCase {
         unset($GLOBALS['__test_ajax_response']);
         $_POST = [];
 
-        // Reset Schema memoisation.
-        $r = new ReflectionProperty(MxChat_DuckDB_Vector_Store_Schema::class, 'ensured');
-        $r->setAccessible(true);
-        $r->setValue(null, []);
+        MxChat_Test_Helpers::reset_schema_memoisation();
 
-        $this->mock_conn = new class implements MxChat_DuckDB_Connection {
-            public array $log = [];
-            public bool $ping_returns = true;
-            public array $count_response = [['c' => 4242]];
-            public function execute(string $sql, array $params = []): array {
-                $this->log[] = $sql;
-                if (stripos($sql, 'schema_meta') !== false && stripos($sql, 'SELECT value') !== false) {
-                    return [['value' => '3']];
-                }
-                if (stripos($sql, 'SELECT COUNT(*)') !== false) {
-                    return $this->count_response;
-                }
-                return [];
-            }
-            public function ping(): bool { return $this->ping_returns; }
-            public function identifier(): string { return 'mock:admin-backend'; }
-        };
+        $this->mock_conn = new MxChat_Test_RecordingConnection('mock:admin-backend', [
+            'SELECT COUNT(*)' => [['c' => 4242]],
+        ]);
 
         $defaults = MxChat_DuckDB_Options::defaults();
         update_option('mxchat_duckdb_options', array_merge($defaults, [
@@ -66,13 +49,7 @@ final class AdminAjaxTest extends TestCase {
             'embedding_model' => 'text-embedding-3-small',
         ]);
 
-        MxChat_DuckDB_Connection_Factory::reset_cache();
-        $r2 = new ReflectionProperty(MxChat_DuckDB_Connection_Factory::class, 'cache');
-        $r2->setAccessible(true);
-        $rk = new ReflectionMethod(MxChat_DuckDB_Connection_Factory::class, 'cache_key');
-        $rk->setAccessible(true);
-        $key = $rk->invoke(null, MxChat_DuckDB_Options::get());
-        $r2->setValue(null, [$key => $this->mock_conn]);
+        MxChat_Test_Helpers::inject_mock_connection($this->mock_conn);
 
         $this->admin = MxChat_DuckDB_Admin::instance();
     }
@@ -162,20 +139,13 @@ final class AdminAjaxTest extends TestCase {
     public function test_test_connection_returns_error_when_factory_throws(): void {
         $this->arm_valid_nonce();
         // Install a connection that throws on ping.
-        $throwing = new class implements MxChat_DuckDB_Connection {
+        $throwing = new class('mock:throwing') extends MxChat_Test_RecordingConnection {
             public function execute(string $sql, array $params = []): array {
                 throw new RuntimeException('SQL backend exploded');
             }
             public function ping(): bool { throw new RuntimeException('SQL backend exploded'); }
-            public function identifier(): string { return 'mock:throwing'; }
         };
-        MxChat_DuckDB_Connection_Factory::reset_cache();
-        $r = new ReflectionProperty(MxChat_DuckDB_Connection_Factory::class, 'cache');
-        $r->setAccessible(true);
-        $rk = new ReflectionMethod(MxChat_DuckDB_Connection_Factory::class, 'cache_key');
-        $rk->setAccessible(true);
-        $key = $rk->invoke(null, MxChat_DuckDB_Options::get());
-        $r->setValue(null, [$key => $throwing]);
+        MxChat_Test_Helpers::inject_mock_connection($throwing);
 
         $resp = $this->captureAjaxResponse(fn() => $this->admin->ajax_test_connection());
         $this->assertFalse($resp['success']);

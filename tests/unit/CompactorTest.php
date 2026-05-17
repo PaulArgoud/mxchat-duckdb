@@ -30,13 +30,12 @@ final class CompactorTest extends TestCase {
         $this->wpdb->prefix = 'wp_c' . bin2hex(random_bytes(3)) . '_';
         $GLOBALS['wpdb'] = $this->wpdb;
 
-        $r = new ReflectionProperty(MxChat_DuckDB_Vector_Store_Schema::class, 'ensured');
-        $r->setAccessible(true);
-        $r->setValue(null, []);
+        MxChat_Test_Helpers::reset_schema_memoisation();
 
-        $this->mock_conn = new class implements MxChat_DuckDB_Connection {
-            public array $log = [];
-            /** @var array<int, array<int, array>> pages of vector_id rows to return for SELECT vector_id */
+        // The compactor's prune_orphans paginates DuckDB vector_id pages —
+        // we set $pages + $page_index on the recording connection to feed
+        // the loop and break it.
+        $this->mock_conn = new class('mock:compactor') extends MxChat_Test_RecordingConnection {
             public array $pages = [];
             public int $page_index = 0;
             public function execute(string $sql, array $params = []): array {
@@ -49,8 +48,6 @@ final class CompactorTest extends TestCase {
                 }
                 return [];
             }
-            public function ping(): bool { return true; }
-            public function identifier(): string { return 'mock:compactor'; }
         };
 
         $defaults = MxChat_DuckDB_Options::defaults();
@@ -60,13 +57,7 @@ final class CompactorTest extends TestCase {
             'last_sync_at'  => time() - 7200, // 2h ago — past the 1h freshness floor
         ]));
 
-        MxChat_DuckDB_Connection_Factory::reset_cache();
-        $r2 = new ReflectionProperty(MxChat_DuckDB_Connection_Factory::class, 'cache');
-        $r2->setAccessible(true);
-        $rk = new ReflectionMethod(MxChat_DuckDB_Connection_Factory::class, 'cache_key');
-        $rk->setAccessible(true);
-        $key = $rk->invoke(null, MxChat_DuckDB_Options::get());
-        $r2->setValue(null, [$key => $this->mock_conn]);
+        MxChat_Test_Helpers::inject_mock_connection($this->mock_conn);
     }
 
     private function compactor(): MxChat_DuckDB_Compactor {

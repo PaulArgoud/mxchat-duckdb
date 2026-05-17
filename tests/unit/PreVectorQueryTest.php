@@ -25,10 +25,7 @@ final class PreVectorQueryTest extends TestCase {
         $GLOBALS['__test_options']   = [];
         $GLOBALS['__test_transients'] = [];
 
-        // Reset the Vector_Store singleton so each test can install its own stub.
-        $r = new ReflectionProperty(MxChat_DuckDB_Vector_Store::class, 'current');
-        $r->setAccessible(true);
-        $r->setValue(null, null);
+        MxChat_Test_Helpers::reset_vector_store_current();
 
         // Install a baseline "enabled" options bundle. Individual tests
         // override as needed.

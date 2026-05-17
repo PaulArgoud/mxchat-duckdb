@@ -20,36 +20,15 @@ final class VectorStoreFacadeTest extends TestCase {
         $GLOBALS['__test_options']    = [];
         $GLOBALS['__test_transients'] = [];
 
-        // Reset Schema memoisation + Vector_Store singleton cache.
-        $r1 = new ReflectionProperty(MxChat_DuckDB_Vector_Store_Schema::class, 'ensured');
-        $r1->setAccessible(true);
-        $r1->setValue(null, []);
-
-        $r2 = new ReflectionProperty(MxChat_DuckDB_Vector_Store::class, 'current');
-        $r2->setAccessible(true);
-        $r2->setValue(null, null);
+        MxChat_Test_Helpers::reset_schema_memoisation();
+        MxChat_Test_Helpers::reset_vector_store_current();
 
         // Reset the Plugin stub's cache generation counter so each test
         // starts from a known baseline.
         MxChat_DuckDB_Plugin::$cache_gen = 1;
         MxChat_DuckDB_Plugin::$flushed = [];
 
-        $this->mock_conn = new class implements MxChat_DuckDB_Connection {
-            public array $log = [];
-            public array $responses = [];
-            public function execute(string $sql, array $params = []): array {
-                $this->log[] = $sql;
-                if (stripos($sql, 'schema_meta') !== false && stripos($sql, 'SELECT value') !== false) {
-                    return [['value' => '3']]; // schema already at target
-                }
-                foreach ($this->responses as $needle => $rows) {
-                    if (stripos($sql, $needle) !== false) return $rows;
-                }
-                return [];
-            }
-            public function ping(): bool { return true; }
-            public function identifier(): string { return 'mock:facade'; }
-        };
+        $this->mock_conn = new MxChat_Test_RecordingConnection('mock:facade');
     }
 
     private function store(array $opts_override = [], int $dim = 3): MxChat_DuckDB_Vector_Store {
@@ -300,15 +279,9 @@ final class VectorStoreFacadeTest extends TestCase {
             ['embedding_dim' => 1536]
         ));
         // Vector_Store::current() does `new self()` with no args — the
-        // constructor falls back to Connection_Factory. Pre-populate the
-        // factory's cache with our mock so no real backend is spawned.
-        MxChat_DuckDB_Connection_Factory::reset_cache();
-        $r = new ReflectionProperty(MxChat_DuckDB_Connection_Factory::class, 'cache');
-        $r->setAccessible(true);
-        $rk = new ReflectionMethod(MxChat_DuckDB_Connection_Factory::class, 'cache_key');
-        $rk->setAccessible(true);
-        $key = $rk->invoke(null, MxChat_DuckDB_Options::get());
-        $r->setValue(null, [$key => $this->mock_conn]);
+        // constructor falls back to Connection_Factory. Inject our mock so
+        // no real backend is spawned.
+        MxChat_Test_Helpers::inject_mock_connection($this->mock_conn);
 
         $a = MxChat_DuckDB_Vector_Store::current();
         $b = MxChat_DuckDB_Vector_Store::current();

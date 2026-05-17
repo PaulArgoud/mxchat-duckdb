@@ -39,29 +39,10 @@ final class PostReprocessorTest extends TestCase {
         // Pre-populate the Vector_Store schema memoisation + Connection_Factory
         // cache so `new MxChat_DuckDB_Vector_Store()` inside reprocess_posts()
         // doesn't try to instantiate a real backend.
-        $r = new ReflectionProperty(MxChat_DuckDB_Vector_Store_Schema::class, 'ensured');
-        $r->setAccessible(true);
-        $r->setValue(null, []);
-
-        $mock_conn = new class implements MxChat_DuckDB_Connection {
-            public function execute(string $sql, array $params = []): array {
-                if (stripos($sql, 'schema_meta') !== false && stripos($sql, 'SELECT value') !== false) {
-                    return [['value' => '3']];
-                }
-                return [];
-            }
-            public function ping(): bool { return true; }
-            public function identifier(): string { return 'mock:reprocessor'; }
-        };
-        MxChat_DuckDB_Connection_Factory::reset_cache();
-        $r2 = new ReflectionProperty(MxChat_DuckDB_Connection_Factory::class, 'cache');
-        $r2->setAccessible(true);
+        MxChat_Test_Helpers::reset_schema_memoisation();
         $defaults = MxChat_DuckDB_Options::defaults();
         update_option('mxchat_duckdb_options', array_merge($defaults, ['embedding_dim' => 3]));
-        $rk = new ReflectionMethod(MxChat_DuckDB_Connection_Factory::class, 'cache_key');
-        $rk->setAccessible(true);
-        $key = $rk->invoke(null, MxChat_DuckDB_Options::get());
-        $r2->setValue(null, [$key => $mock_conn]);
+        MxChat_Test_Helpers::inject_mock_connection(new MxChat_Test_RecordingConnection('mock:reprocessor'));
 
         $this->reprocessor = new MxChat_DuckDB_Post_Reprocessor();
     }

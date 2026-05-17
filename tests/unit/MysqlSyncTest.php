@@ -37,43 +37,11 @@ final class MysqlSyncTest extends TestCase {
         $this->wpdb->prefix = 'wp_t' . bin2hex(random_bytes(3)) . '_';
         $GLOBALS['wpdb'] = $this->wpdb;
 
-        // Wipe the per-request memoisation caches that would otherwise
-        // leak between tests.
-        $r = new ReflectionProperty(MxChat_DuckDB_Vector_Store_Schema::class, 'ensured');
-        $r->setAccessible(true);
-        $r->setValue(null, []);
+        MxChat_Test_Helpers::reset_schema_memoisation();
+        // Mysql_Sync::detect_kb_columns has a function-level static cache
+        // we can't reset; each test gets a unique $wpdb->prefix (above) so
+        // the cache slots don't collide.
 
-        // Static cache in Mysql_Sync::detect_kb_columns.
-        $rm = new ReflectionMethod(MxChat_DuckDB_Mysql_Sync::class, 'detect_kb_columns');
-        $rm->setAccessible(true);
-        // Force re-evaluation by clearing PHP's static via the same trick:
-        // call it once on a "primer" table that won't exist later so the
-        // static cache holds an unused entry. Each real test uses its own
-        // distinct table name, dodging the cache.
-        // (PHP doesn't expose function-level statics; the test names avoid
-        // collision with each other instead.)
-
-        // Inject a recording mock connection into Connection_Factory::$cache
-        // so `new MxChat_DuckDB_Vector_Store()` inside the sync routines
-        // doesn't try to instantiate a real DuckDB backend.
-        $this->mock_conn = new class implements MxChat_DuckDB_Connection {
-            public array $log = [];
-            public function execute(string $sql, array $params = []): array {
-                $this->log[] = $sql;
-                // Schema's `SELECT value FROM …schema_meta` should return v3
-                // so ensure_schema() short-circuits with no extra DDL.
-                if (stripos($sql, 'schema_meta') !== false && stripos($sql, 'SELECT value') !== false) {
-                    return [['value' => '3']];
-                }
-                return [];
-            }
-            public function ping(): bool { return true; }
-            public function identifier(): string { return 'mock:sync'; }
-        };
-
-        MxChat_DuckDB_Connection_Factory::reset_cache();
-        $r2 = new ReflectionProperty(MxChat_DuckDB_Connection_Factory::class, 'cache');
-        $r2->setAccessible(true);
         // Tests use 3-dim embeddings for readability; align the option so
         // Vector_Store's upsert guard doesn't reject the synthetic rows.
         $defaults = MxChat_DuckDB_Options::defaults();
@@ -81,13 +49,9 @@ final class MysqlSyncTest extends TestCase {
             'enabled'       => true,
             'embedding_dim' => 3,
         ]));
-        $opts = MxChat_DuckDB_Options::get();
-        // Reproduce Connection_Factory::cache_key($opts) so the injection
-        // hits the slot Vector_Store will look up.
-        $rk = new ReflectionMethod(MxChat_DuckDB_Connection_Factory::class, 'cache_key');
-        $rk->setAccessible(true);
-        $key = $rk->invoke(null, $opts);
-        $r2->setValue(null, [$key => $this->mock_conn]);
+
+        $this->mock_conn = new MxChat_Test_RecordingConnection('mock:sync');
+        MxChat_Test_Helpers::inject_mock_connection($this->mock_conn);
     }
 
     // ─── detect_kb_columns ────────────────────────────────────────────────
@@ -263,12 +227,11 @@ final class MysqlSyncTest extends TestCase {
     // ─── full_sync_native (DuckDB-native fast path, v0.8.0+) ─────────────
 
     private function reset_has_mysql_extension_cache(): void {
-        // The class-static cache in Mysql_Sync::$mysql_ext_available
-        // persists across tests in the same process. Reset it via reflection
-        // so each test re-evaluates against its own mock connection.
-        $r = new ReflectionProperty(MxChat_DuckDB_Mysql_Sync::class, 'mysql_ext_available');
-        $r->setAccessible(true);
-        $r->setValue(null, null);
+        // Thin wrapper kept for in-test call-site clarity; the actual
+        // reset is shared in MxChat_Test_Helpers (the class-static cache
+        // in Mysql_Sync::$mysql_ext_available persists across tests in
+        // the same process otherwise).
+        MxChat_Test_Helpers::reset_mysql_extension_cache();
     }
 
     public function test_native_sync_throws_when_mysql_extension_is_not_installed(): void {
@@ -302,14 +265,7 @@ final class MysqlSyncTest extends TestCase {
             public function ping(): bool { return true; }
             public function identifier(): string { return 'mock:native'; }
         };
-        // Re-wire Connection_Factory cache to this new mock.
-        MxChat_DuckDB_Connection_Factory::reset_cache();
-        $r = new ReflectionProperty(MxChat_DuckDB_Connection_Factory::class, 'cache');
-        $r->setAccessible(true);
-        $rk = new ReflectionMethod(MxChat_DuckDB_Connection_Factory::class, 'cache_key');
-        $rk->setAccessible(true);
-        $key = $rk->invoke(null, MxChat_DuckDB_Options::get());
-        $r->setValue(null, [$key => $native_conn]);
+        MxChat_Test_Helpers::inject_mock_connection($native_conn);
 
         // Wipe the static cache via a reflection trick on detect_kb_columns
         // (also has a static, and a fresh prefix per test handles it).

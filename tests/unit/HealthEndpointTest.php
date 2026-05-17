@@ -22,29 +22,11 @@ final class HealthEndpointTest extends TestCase {
         $GLOBALS['__test_current_user_can'] = true;
         $GLOBALS['__test_rest_routes']     = [];
 
-        $r = new ReflectionProperty(MxChat_DuckDB_Vector_Store_Schema::class, 'ensured');
-        $r->setAccessible(true);
-        $r->setValue(null, []);
+        MxChat_Test_Helpers::reset_schema_memoisation();
 
-        $this->mock_conn = new class implements MxChat_DuckDB_Connection {
-            public bool $ping_returns = true;
-            public array $count_response = [['c' => 1234]];
-            public function execute(string $sql, array $params = []): array {
-                if (stripos($sql, 'schema_meta') !== false && stripos($sql, 'SELECT value') !== false) {
-                    return [['value' => '3']];
-                }
-                if (stripos($sql, 'SELECT COUNT(*)') !== false) {
-                    return $this->count_response;
-                }
-                return [];
-            }
-            public function ping(): bool { return $this->ping_returns; }
-            public function identifier(): string { return 'mock:health-backend'; }
-        };
-
-        MxChat_DuckDB_Connection_Factory::reset_cache();
-        $r2 = new ReflectionProperty(MxChat_DuckDB_Connection_Factory::class, 'cache');
-        $r2->setAccessible(true);
+        $this->mock_conn = new MxChat_Test_RecordingConnection('mock:health-backend', [
+            'SELECT COUNT(*)' => [['c' => 1234]],
+        ]);
 
         $defaults = MxChat_DuckDB_Options::defaults();
         update_option('mxchat_duckdb_options', array_merge($defaults, [
@@ -53,10 +35,7 @@ final class HealthEndpointTest extends TestCase {
             'last_sync_at'  => time() - 600, // 10min ago
             'last_error'    => '',
         ]));
-        $rk = new ReflectionMethod(MxChat_DuckDB_Connection_Factory::class, 'cache_key');
-        $rk->setAccessible(true);
-        $key = $rk->invoke(null, MxChat_DuckDB_Options::get());
-        $r2->setValue(null, [$key => $this->mock_conn]);
+        MxChat_Test_Helpers::inject_mock_connection($this->mock_conn);
 
         $this->health = MxChat_DuckDB_Health::instance();
     }
@@ -114,21 +93,16 @@ final class HealthEndpointTest extends TestCase {
     public function test_exception_in_handle_returns_503_status_error(): void {
         // Inject a connection whose ping throws — the catch in handle()
         // converts that into a 503 / status=error / surfaces the message.
-        $throwing_conn = new class implements MxChat_DuckDB_Connection {
+        $throwing_conn = new class('mock:throwing') extends MxChat_Test_RecordingConnection {
             public function execute(string $sql, array $params = []): array {
                 if (stripos($sql, 'schema_meta') !== false) return [['value' => '3']];
                 throw new RuntimeException('mocked: lost connection to MotherDuck');
             }
-            public function ping(): bool { throw new RuntimeException('mocked: lost connection to MotherDuck'); }
-            public function identifier(): string { return 'mock:throwing'; }
+            public function ping(): bool {
+                throw new RuntimeException('mocked: lost connection to MotherDuck');
+            }
         };
-        MxChat_DuckDB_Connection_Factory::reset_cache();
-        $r = new ReflectionProperty(MxChat_DuckDB_Connection_Factory::class, 'cache');
-        $r->setAccessible(true);
-        $rk = new ReflectionMethod(MxChat_DuckDB_Connection_Factory::class, 'cache_key');
-        $rk->setAccessible(true);
-        $key = $rk->invoke(null, MxChat_DuckDB_Options::get());
-        $r->setValue(null, [$key => $throwing_conn]);
+        MxChat_Test_Helpers::inject_mock_connection($throwing_conn);
 
         $resp = $this->health->handle(new WP_REST_Request());
         $this->assertSame(503, $resp->status);

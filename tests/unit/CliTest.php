@@ -25,29 +25,12 @@ final class CliTest extends TestCase {
         unset($GLOBALS['__test_cli_format_items']);
         WP_CLI::reset();
 
-        // Reset memoisations + singletons.
-        $r1 = new ReflectionProperty(MxChat_DuckDB_Vector_Store_Schema::class, 'ensured');
-        $r1->setAccessible(true);
-        $r1->setValue(null, []);
+        MxChat_Test_Helpers::reset_schema_memoisation();
         MxChat_DuckDB_Plugin::$cache_gen = 1;
 
-        $this->mock_conn = new class implements MxChat_DuckDB_Connection {
-            public array $log = [];
-            public bool $ping_returns = true;
-            public array $count_response = [['c' => 8421]];
-            public function execute(string $sql, array $params = []): array {
-                $this->log[] = $sql;
-                if (stripos($sql, 'schema_meta') !== false && stripos($sql, 'SELECT value') !== false) {
-                    return [['value' => '3']];
-                }
-                if (stripos($sql, 'SELECT COUNT(*)') !== false) {
-                    return $this->count_response;
-                }
-                return [];
-            }
-            public function ping(): bool { return $this->ping_returns; }
-            public function identifier(): string { return 'mock:cli-backend'; }
-        };
+        $this->mock_conn = new MxChat_Test_RecordingConnection('mock:cli-backend', [
+            'SELECT COUNT(*)' => [['c' => 8421]],
+        ]);
 
         $defaults = MxChat_DuckDB_Options::defaults();
         update_option('mxchat_duckdb_options', array_merge($defaults, [
@@ -58,13 +41,7 @@ final class CliTest extends TestCase {
             'last_error'    => '',
         ]));
 
-        MxChat_DuckDB_Connection_Factory::reset_cache();
-        $r2 = new ReflectionProperty(MxChat_DuckDB_Connection_Factory::class, 'cache');
-        $r2->setAccessible(true);
-        $rk = new ReflectionMethod(MxChat_DuckDB_Connection_Factory::class, 'cache_key');
-        $rk->setAccessible(true);
-        $key = $rk->invoke(null, MxChat_DuckDB_Options::get());
-        $r2->setValue(null, [$key => $this->mock_conn]);
+        MxChat_Test_Helpers::inject_mock_connection($this->mock_conn);
 
         $this->cli = new MxChat_DuckDB_CLI();
     }
