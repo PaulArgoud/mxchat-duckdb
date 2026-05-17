@@ -82,6 +82,105 @@ if (!function_exists('plugin_dir_url')) {
 if (!function_exists('plugin_basename')) {
     function plugin_basename($file) { return basename($file); }
 }
+if (!function_exists('wp_unslash')) {
+    function wp_unslash($value) {
+        return is_string($value) ? stripslashes($value) : $value;
+    }
+}
+if (!function_exists('sanitize_text_field')) {
+    function sanitize_text_field($str) {
+        return is_scalar($str) ? trim(strip_tags((string) $str)) : '';
+    }
+}
+if (!function_exists('sanitize_key')) {
+    function sanitize_key($key) {
+        $key = strtolower((string) $key);
+        return preg_replace('/[^a-z0-9_\-]/', '', $key);
+    }
+}
+if (!function_exists('add_settings_error')) {
+    function add_settings_error($setting, $code, $message, $type = 'error') {
+        $GLOBALS['__test_settings_errors'][] = compact('setting', 'code', 'message', 'type');
+    }
+}
+if (!function_exists('rest_url')) {
+    function rest_url($path = '') {
+        return 'http://example.test/wp-json/' . ltrim((string) $path, '/');
+    }
+}
+if (!function_exists('untrailingslashit')) {
+    function untrailingslashit($string) {
+        return rtrim((string) $string, '/\\');
+    }
+}
+if (!function_exists('trailingslashit')) {
+    function trailingslashit($string) {
+        return rtrim((string) $string, '/\\') . '/';
+    }
+}
+if (!function_exists('wp_upload_dir')) {
+    function wp_upload_dir() {
+        return ['basedir' => sys_get_temp_dir() . '/wp-uploads-test'];
+    }
+}
+if (!function_exists('wp_mkdir_p')) {
+    function wp_mkdir_p($path) {
+        return is_dir($path) || mkdir($path, 0755, true);
+    }
+}
+if (!function_exists('current_user_can')) {
+    function current_user_can($capability) {
+        return $GLOBALS['__test_current_user_can'] ?? true;
+    }
+}
+
+// Minimal WP_REST_Request stub — covers the surface that Pinecone_Proxy::check_token
+// and the handlers actually exercise.
+if (!class_exists('WP_REST_Request')) {
+    class WP_REST_Request {
+        private array $headers = [];
+        private array $params = [];
+        private array $query = [];
+        private ?array $json = null;
+
+        public function set_header(string $name, ?string $value): void {
+            $this->headers[strtolower($name)] = $value;
+        }
+        public function get_header(string $name): ?string {
+            return $this->headers[strtolower($name)] ?? null;
+        }
+        public function set_param(string $name, $value): void {
+            $this->params[$name] = $value;
+        }
+        public function get_param(string $name) {
+            return $this->params[$name] ?? null;
+        }
+        public function set_json_params(?array $body): void {
+            $this->json = $body;
+        }
+        public function get_json_params(): ?array {
+            return $this->json;
+        }
+        public function set_query_params(array $params): void {
+            $this->query = $params;
+        }
+        public function get_query_params(): array {
+            return $this->query;
+        }
+    }
+}
+
+// Minimal WP_REST_Response stub.
+if (!class_exists('WP_REST_Response')) {
+    class WP_REST_Response {
+        public $data;
+        public int $status;
+        public function __construct($data = null, int $status = 200) {
+            $this->data = $data;
+            $this->status = $status;
+        }
+    }
+}
 
 // ───── Load the plugin classes we want to test ──────────────────────────
 // We avoid loading mxchat-duckdb.php itself (it calls register_*_hook on
@@ -105,6 +204,8 @@ require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-vector-store.php';
 require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-mysql-sync.php';
 require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-post-reprocessor.php';
 require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-sync.php';
+require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-search-adapter.php';
+require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-pinecone-proxy.php';
 
 // Stub the Plugin class so Vector_Store::upsert()/delete_*() can call
 // MxChat_DuckDB_Plugin::flush_query_cache() without booting the full plugin.
