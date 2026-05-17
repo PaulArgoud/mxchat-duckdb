@@ -10,12 +10,17 @@ parameters:
         - tests/_output
         - build
     treatPhpDocTypesAsCertain: false
-    # WordPress globals/functions are dynamically loaded; without WP stubs PHPStan
-    # would scream on every wp_* call. The bootstrap below short-circuits those.
+    # WordPress / wpdb / WP_REST_Request / WP_Post stubs come from
+    # szepeviktor/phpstan-wordpress (auto-loaded via phpstan/extension-installer
+    # when dev-deps are installed). The hand-rolled bootstrap stays as a
+    # fallback for environments without composer install.
     bootstrapFiles:
         - tests/phpstan-bootstrap.php
-    # Most baseline issues come from WP API surface (WP_REST_Request, WP_Post, wpdb…)
-    # not being statically resolvable. Once https://github.com/szepeviktor/phpstan-wordpress
-    # is added as a dev-dep, drop this and bump to level 8.
+    dynamicConstantNames:
+        - WP_DEBUG
+        - WP_CLI
     ignoreErrors:
         - '#Call to an undefined method MxChat_DuckDB_Connection::table_name_quoted\(\)#'
+    # Path to level 8: once a CI run with the new dev-deps is green at level 6,
+    # bump to 7, run, baseline any noise, bump to 8, drop continue-on-error in
+    # ci.yml. Doing it incrementally keeps each diff reviewable.
