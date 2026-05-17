@@ -63,20 +63,28 @@ class MxChat_DuckDB_Vector_Store_Query {
         $start = microtime(true);
         $where_parts = $this->build_where($bot_id, $filter);
 
-        // When dedup is on, oversample so we still return top_k after collapsing
-        // multiple chunks that share a source_url. 3× is a heuristic — tunable.
         $dedup_on = !empty($opts['dedup_per_source']);
-        $fetch_k  = $dedup_on ? max($top_k * 3, $top_k + 10) : $top_k;
-
         $query_text = (string) apply_filters('mxchat_duckdb_query_text', '', $bot_id, $filter);
-        if (!empty($opts['hybrid_enabled']) && $query_text !== '') {
-            $matches = $this->query_hybrid($embedding, $query_text, $fetch_k, $where_parts, (float) $opts['hybrid_alpha']);
-        } else {
-            $matches = $this->query_vector_only($embedding, $fetch_k, $where_parts);
-        }
 
-        if ($dedup_on) {
-            $matches = self::dedup_per_source($matches, $top_k);
+        if (!empty($opts['hybrid_enabled']) && $query_text !== '') {
+            // Hybrid path: BM25 + vector merged in PHP, so dedup also stays in
+            // PHP. Over-fetch ×3 so the post-merge dedup leaves enough rows
+            // for top_k. (SQL-side dedup is reserved for the pure-vector path
+            // where DuckDB can do it inside a single CTE without breaking
+            // HNSW push-down.)
+            $fetch_k = $dedup_on ? max($top_k * 3, $top_k + 10) : $top_k;
+            $matches = $this->query_hybrid($embedding, $query_text, $fetch_k, $where_parts, (float) $opts['hybrid_alpha']);
+            if ($dedup_on) {
+                $matches = self::dedup_per_source($matches, $top_k);
+            }
+        } else {
+            // Pure vector path: push the dedup into DuckDB via a CTE +
+            // ROW_NUMBER() OVER (PARTITION BY source_url ORDER BY score DESC).
+            // The inner query keeps the HNSW-friendly
+            // "ORDER BY <distance>(col, lit) LIMIT k" shape so VSS can still
+            // use the index; the outer wrapper picks the top row per source_url
+            // (and lets empty-URL rows through, mirroring the PHP semantics).
+            $matches = $this->query_vector_only($embedding, $top_k, $where_parts, $dedup_on);
         }
 
         $matches = apply_filters('mxchat_duckdb_rerank_matches', $matches, $embedding, $bot_id, $filter, $query_text);
@@ -102,27 +110,72 @@ class MxChat_DuckDB_Vector_Store_Query {
 
     /**
      * Pure vector top-K. $where_parts is the pre-built array of SQL fragments
-     * (AND-joined).
+     * (AND-joined). When $dedup_on, the query is wrapped in a CTE so the
+     * per-source_url deduplication happens inside DuckDB rather than in PHP.
+     *
+     * The inner sub-query preserves the
+     * "ORDER BY <distance>(col, literal) LIMIT k" shape that the VSS planner
+     * recognises for HNSW push-down — wrapping in the dedup CTE adds rows
+     * past top_k (the over-fetch factor) so the outer dedup has enough
+     * candidates to collapse same-URL chunks and still land top_k rows.
      */
-    private function query_vector_only(array $embedding, int $top_k, array $where_parts): array {
+    private function query_vector_only(array $embedding, int $top_k, array $where_parts, bool $dedup_on = false): array {
+        $score_expr = $this->score_expression($embedding);
+        $table_q    = $this->quote_ident($this->table);
+        $where_sql  = implode(' AND ', $where_parts);
+
+        if (!$dedup_on) {
+            $sql = sprintf(
+                'SELECT vector_id AS id,
+                        %1$s AS score,
+                        content AS text,
+                        source_url,
+                        role_restriction,
+                        content_type AS type,
+                        chunk_index,
+                        total_chunks,
+                        is_chunked
+                 FROM %2$s
+                 WHERE %3$s
+                 ORDER BY score DESC
+                 LIMIT %4$d',
+                $score_expr, $table_q, $where_sql, $top_k
+            );
+            return self::rows_to_matches($this->conn->execute($sql));
+        }
+
+        // Dedup-aware variant: over-fetch ×3 in the inner HNSW-friendly query,
+        // partition by source_url in the outer CTE, keep rn=1 per partition
+        // (plus all empty-URL rows since they shouldn't be deduped against
+        // each other), then re-sort by score and apply the final LIMIT.
+        $over_fetch = max($top_k * 3, $top_k + 10);
         $sql = sprintf(
-            'SELECT vector_id AS id,
-                    %1$s AS score,
-                    content AS text,
-                    source_url,
-                    role_restriction,
-                    content_type AS type,
-                    chunk_index,
-                    total_chunks,
-                    is_chunked
-             FROM %2$s
-             WHERE %3$s
+            'WITH candidates AS (
+                SELECT vector_id AS id,
+                       %1$s AS score,
+                       content AS text,
+                       source_url,
+                       role_restriction,
+                       content_type AS type,
+                       chunk_index,
+                       total_chunks,
+                       is_chunked
+                FROM %2$s
+                WHERE %3$s
+                ORDER BY score DESC
+                LIMIT %4$d
+             ), ranked AS (
+                SELECT *,
+                       ROW_NUMBER() OVER (PARTITION BY source_url ORDER BY score DESC) AS rn
+                FROM candidates
+             )
+             SELECT id, score, text, source_url, role_restriction, type,
+                    chunk_index, total_chunks, is_chunked
+             FROM ranked
+             WHERE source_url = \'\' OR rn = 1
              ORDER BY score DESC
-             LIMIT %4$d',
-            $this->score_expression($embedding),
-            $this->quote_ident($this->table),
-            implode(' AND ', $where_parts),
-            $top_k
+             LIMIT %5$d',
+            $score_expr, $table_q, $where_sql, $over_fetch, $top_k
         );
         return self::rows_to_matches($this->conn->execute($sql));
     }

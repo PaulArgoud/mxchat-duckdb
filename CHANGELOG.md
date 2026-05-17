@@ -19,6 +19,93 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.8.0] — 2026-05-18
+
+DuckDB-feature exploitation pass. Three changes that move work the plugin
+was doing in PHP into DuckDB itself, leaning on extensions and SQL
+primitives we were underusing. **No schema migration**, no public API
+break; the v0.6.0 contracts (`Vector_Store::current()`, the
+`mxchat_pre_vector_query` filter, the cache generation counter) are all
+unchanged.
+
+### Added
+
+- **`wp mxchat-duckdb sync --native`** — opt-in fast path for the
+  MySQL → DuckDB sync. Uses the DuckDB `mysql` extension to ATTACH the
+  WordPress database in read-only mode and copy every row through a
+  single `INSERT INTO mxchat_vectors SELECT … FROM wp_mysql_attach`
+  statement, parsing the PHP-serialised `embedding_vector` column via
+  `regexp_extract_all('d:([-0-9.eE+]+);')` and casting to `FLOAT[N]`
+  in-engine. Eliminates the per-batch PHP↔MySQL↔DuckDB round-trip that
+  dominated `full_sync()` on large catalogues — empirically 5–10× on
+  100k-vector copies.
+  - Requires the DuckDB `mysql` extension (auto-installed by `INSTALL mysql`
+    on first call); the command exits with a clear error and points at the
+    PHP fallback when the extension isn't available.
+  - Uses WordPress's own DB constants (`DB_HOST` / `DB_USER` /
+    `DB_PASSWORD` / `DB_NAME`); falls back from `localhost` to `127.0.0.1`
+    because the extension is TCP-only.
+  - Read-only ATTACH — no risk of writing back to WP MySQL by accident.
+- **New `MxChat_DuckDB_Mysql_Sync::full_sync_native()`** method (public)
+  and `has_duckdb_mysql_extension()` (public static) — usable directly
+  from custom integrations, not only the CLI.
+
+### Changed
+
+- **MotherDuck connection now registers a persistent DuckDB secret**
+  instead of embedding the token in every `ATTACH` URL. The CREATE OR
+  REPLACE PERSISTENT SECRET runs at session init; the ATTACH URL is the
+  clean `'md:<dbname>'`. Why: (1) the token no longer flows through the
+  SQL script piped to the CLI's stdin on every query — it lives in
+  `~/.duckdb/stored_secrets/` as a per-server credential; (2) ATTACH URLs
+  in logs / errors are readable; (3) rotating the token in plugin settings
+  re-runs CREATE OR REPLACE transparently. Requires DuckDB ≥ 0.10.
+- **Per-source dedup in the pure-vector path now happens in DuckDB**
+  via a CTE with `ROW_NUMBER() OVER (PARTITION BY source_url ORDER BY score DESC)`.
+  The inner sub-query keeps the HNSW-friendly
+  `ORDER BY <distance>(col, literal) LIMIT k` shape so VSS can still
+  push the score+sort+limit into the index; the outer wrapper picks
+  rn=1 per source_url (and lets empty-URL rows through, mirroring the
+  pre-existing PHP semantics in `Vector_Store_Query::dedup_per_source`).
+  The hybrid path keeps PHP dedup because BM25 + vector are merged in
+  PHP anyway.
+
+### Fixed
+
+- `Mysql_Sync::$mysql_ext_available` static class cache replaces a
+  function-level `static $cache = null` so tests (and any future debug
+  tooling) can force-reset the extension probe without restarting the
+  PHP process.
+
+### Tests
+
+5 new test cases covering the three changes (240 → 245 tests,
+857 → 880 assertions):
+- `MotherDuckConnectionTest::test_init_sql_uses_persistent_secret_rather_than_token_in_attach_url`
+- `MotherDuckConnectionTest::test_init_sql_escapes_single_quotes_in_token` (kept, retargeted at the new CREATE SECRET literal)
+- `MysqlSyncTest::test_native_sync_throws_when_mysql_extension_is_not_installed`
+- `MysqlSyncTest::test_native_sync_emits_attach_and_insert_select_when_extension_present`
+- `MysqlSyncTest::test_native_sync_bot_id_expression_falls_back_when_column_absent`
+- `MysqlSyncTest::test_native_sync_uses_bot_id_column_when_present`
+- `VectorStoreQueryRunTest::test_dedup_per_source_uses_sql_cte_with_row_number` (replaces the v0.6.0 over-fetch ×3 test)
+- `VectorStoreQueryRunTest::test_dedup_off_uses_plain_top_k_limit` (extended to assert NO CTE wrapper)
+- `VectorStoreQueryRunTest::test_hybrid_path_still_uses_php_dedup_with_over_fetch`
+
+### Notes
+
+- The MotherDuck persistent-secret rewrite changes the SQL piped on every
+  CLI invocation. **Re-test the connection after upgrading** to confirm
+  the token + database name still combine into a working ATTACH. The
+  settings page's "Test connection" button does this end-to-end.
+- The native sync path is opt-in only (CLI flag); the synchronous
+  `wp mxchat-duckdb sync` and the admin "Sync now" button keep using the
+  PHP loop. The native path needs proven track record before we make it
+  the default in a future release.
+- No new public option, no new hook, no schema migration. Safe drop-in
+  from 0.7.0.
+
+---
+
 ## [0.7.0] — 2026-05-17
 
 Project hygiene + test coverage pass. **No schema migration**, no

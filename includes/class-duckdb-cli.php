@@ -88,10 +88,33 @@ class MxChat_DuckDB_CLI {
     /**
      * Full MySQL → DuckDB sync. Identical to the "Sync now" admin button.
      *
+     * ## OPTIONS
+     *
+     * [--native]
+     * : Use the DuckDB-native fast path (ATTACH 'mysql' + single INSERT-SELECT
+     *   with regex-parsed embeddings). Requires the DuckDB mysql extension.
+     *   5–10× faster on large catalogues but skips the per-row PHP guards;
+     *   if it fails for any reason, fall back to `wp mxchat-duckdb sync`
+     *   without the flag.
+     *
      * ## EXAMPLES
      *     wp mxchat-duckdb sync
+     *     wp mxchat-duckdb sync --native
      */
     public function sync($args, $assoc_args) {
+        if (isset($assoc_args['native'])) {
+            try {
+                $start = microtime(true);
+                $count = (new MxChat_DuckDB_Mysql_Sync())->full_sync_native();
+                $elapsed = round((microtime(true) - $start) * 1000);
+                \WP_CLI::success(sprintf('Native sync: %d vectors in %d ms.', $count, $elapsed));
+            } catch (\Throwable $e) {
+                \WP_CLI::error('Native sync failed: ' . $e->getMessage()
+                    . ' (re-run without --native to use the PHP fallback)');
+            }
+            return;
+        }
+
         try {
             // The progress bar needs the total up-front; full_sync() only
             // discovers it on the first callback. Defer creation to that point

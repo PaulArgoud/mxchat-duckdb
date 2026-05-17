@@ -259,4 +259,140 @@ final class MysqlSyncTest extends TestCase {
         $log = implode("\n", $this->mock_conn->log);
         $this->assertStringContainsString('DELETE FROM "mxchat_vectors"', $log);
     }
+
+    // ─── full_sync_native (DuckDB-native fast path, v0.8.0+) ─────────────
+
+    private function reset_has_mysql_extension_cache(): void {
+        // The class-static cache in Mysql_Sync::$mysql_ext_available
+        // persists across tests in the same process. Reset it via reflection
+        // so each test re-evaluates against its own mock connection.
+        $r = new ReflectionProperty(MxChat_DuckDB_Mysql_Sync::class, 'mysql_ext_available');
+        $r->setAccessible(true);
+        $r->setValue(null, null);
+    }
+
+    public function test_native_sync_throws_when_mysql_extension_is_not_installed(): void {
+        $this->reset_has_mysql_extension_cache();
+        // mock_conn already returns [] for any non-schema query, including
+        // `duckdb_extensions() WHERE name='mysql'`. With nothing matching,
+        // the extension check resolves to false and the production code
+        // bails with a clear message.
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessageMatches('/mysql extension.*not available/i');
+        (new MxChat_DuckDB_Mysql_Sync())->full_sync_native();
+    }
+
+    public function test_native_sync_emits_attach_and_insert_select_when_extension_present(): void {
+        $this->reset_has_mysql_extension_cache();
+        $native_conn = new class implements MxChat_DuckDB_Connection {
+            public array $log = [];
+            public function execute(string $sql, array $params = []): array {
+                $this->log[] = $sql;
+                if (stripos($sql, 'schema_meta') !== false && stripos($sql, 'SELECT value') !== false) {
+                    return [['value' => '3']];
+                }
+                if (stripos($sql, 'duckdb_extensions()') !== false) {
+                    return [['installed' => true, 'loaded' => true]];
+                }
+                if (stripos($sql, 'SELECT COUNT(*)') !== false) {
+                    return [['c' => 1234]];
+                }
+                return [];
+            }
+            public function ping(): bool { return true; }
+            public function identifier(): string { return 'mock:native'; }
+        };
+        // Re-wire Connection_Factory cache to this new mock.
+        MxChat_DuckDB_Connection_Factory::reset_cache();
+        $r = new ReflectionProperty(MxChat_DuckDB_Connection_Factory::class, 'cache');
+        $r->setAccessible(true);
+        $rk = new ReflectionMethod(MxChat_DuckDB_Connection_Factory::class, 'cache_key');
+        $rk->setAccessible(true);
+        $key = $rk->invoke(null, MxChat_DuckDB_Options::get());
+        $r->setValue(null, [$key => $native_conn]);
+
+        // Wipe the static cache via a reflection trick on detect_kb_columns
+        // (also has a static, and a fresh prefix per test handles it).
+        $count = (new MxChat_DuckDB_Mysql_Sync())->full_sync_native();
+
+        $log = implode("\n", $native_conn->log);
+
+        // Extension lifecycle is invoked.
+        $this->assertStringContainsString('INSTALL mysql', $log);
+        $this->assertStringContainsString('LOAD mysql', $log);
+        // ATTACH builds a connection string from DB_HOST/DB_USER/DB_PASSWORD/DB_NAME.
+        $this->assertMatchesRegularExpression('/ATTACH \'.+\' AS "mxd_wp_mysql_[a-f0-9]{6}" \(TYPE mysql, READ_ONLY\)/', $log);
+        // The big INSERT INTO ... SELECT FROM mysql_attach with the regex parser.
+        $this->assertStringContainsString('INSERT OR REPLACE INTO "mxchat_vectors"', $log);
+        $this->assertStringContainsString("regexp_extract_all(embedding_vector, 'd:([-0-9.eE+]+);', 1)", $log);
+        $this->assertStringContainsString('::FLOAT[3]', $log, 'dim must match the options embedding_dim');
+        // Cleanup: DETACH must run even on success.
+        $this->assertStringContainsString('DETACH "mxd_wp_mysql_', $log);
+
+        $this->assertSame(1234, $count);
+        $opts = get_option('mxchat_duckdb_options');
+        $this->assertSame(1234, (int) $opts['last_sync_count']);
+    }
+
+    public function test_native_sync_bot_id_expression_falls_back_when_column_absent(): void {
+        $this->reset_has_mysql_extension_cache();
+        // detect_kb_columns returns has_bot_id=false → SELECT must emit
+        // the literal 'default' rather than a column reference.
+        $this->wpdb->set_response('SHOW COLUMNS FROM', ['id', 'url', 'embedding_vector']);
+
+        $native_conn = new class implements MxChat_DuckDB_Connection {
+            public array $log = [];
+            public function execute(string $sql, array $params = []): array {
+                $this->log[] = $sql;
+                if (stripos($sql, 'schema_meta') !== false && stripos($sql, 'SELECT value') !== false) return [['value' => '3']];
+                if (stripos($sql, 'duckdb_extensions()') !== false) return [['installed' => true, 'loaded' => true]];
+                if (stripos($sql, 'SELECT COUNT(*)') !== false) return [['c' => 0]];
+                return [];
+            }
+            public function ping(): bool { return true; }
+            public function identifier(): string { return 'mock:native-nobot'; }
+        };
+        MxChat_DuckDB_Connection_Factory::reset_cache();
+        $r = new ReflectionProperty(MxChat_DuckDB_Connection_Factory::class, 'cache');
+        $r->setAccessible(true);
+        $rk = new ReflectionMethod(MxChat_DuckDB_Connection_Factory::class, 'cache_key');
+        $rk->setAccessible(true);
+        $key = $rk->invoke(null, MxChat_DuckDB_Options::get());
+        $r->setValue(null, [$key => $native_conn]);
+
+        (new MxChat_DuckDB_Mysql_Sync())->full_sync_native();
+        $log = implode("\n", $native_conn->log);
+        $this->assertStringContainsString("'default' AS bot_id", $log);
+        $this->assertStringNotContainsString('COALESCE(NULLIF(bot_id', $log);
+    }
+
+    public function test_native_sync_uses_bot_id_column_when_present(): void {
+        $this->reset_has_mysql_extension_cache();
+        $this->wpdb->set_response('SHOW COLUMNS FROM',
+            ['id', 'url', 'embedding_vector', 'bot_id']);
+
+        $native_conn = new class implements MxChat_DuckDB_Connection {
+            public array $log = [];
+            public function execute(string $sql, array $params = []): array {
+                $this->log[] = $sql;
+                if (stripos($sql, 'schema_meta') !== false && stripos($sql, 'SELECT value') !== false) return [['value' => '3']];
+                if (stripos($sql, 'duckdb_extensions()') !== false) return [['installed' => true, 'loaded' => true]];
+                if (stripos($sql, 'SELECT COUNT(*)') !== false) return [['c' => 0]];
+                return [];
+            }
+            public function ping(): bool { return true; }
+            public function identifier(): string { return 'mock:native-bot'; }
+        };
+        MxChat_DuckDB_Connection_Factory::reset_cache();
+        $r = new ReflectionProperty(MxChat_DuckDB_Connection_Factory::class, 'cache');
+        $r->setAccessible(true);
+        $rk = new ReflectionMethod(MxChat_DuckDB_Connection_Factory::class, 'cache_key');
+        $rk->setAccessible(true);
+        $key = $rk->invoke(null, MxChat_DuckDB_Options::get());
+        $r->setValue(null, [$key => $native_conn]);
+
+        (new MxChat_DuckDB_Mysql_Sync())->full_sync_native();
+        $log = implode("\n", $native_conn->log);
+        $this->assertStringContainsString("COALESCE(NULLIF(bot_id, ''), 'default') AS bot_id", $log);
+    }
 }

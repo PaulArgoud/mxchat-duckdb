@@ -120,47 +120,54 @@ final class MotherDuckConnectionTest extends TestCase {
 
     // ─── init_sql composition (verified via subclass that skips the parent ctor) ──
 
-    public function test_init_sql_contains_install_load_attach_use_in_order(): void {
-        // We can't run the real parent constructor in tests; subclass it so
-        // we can capture the init_sql array passed to parent::__construct.
-        $captured_init_sql = null;
+    public function test_init_sql_uses_persistent_secret_rather_than_token_in_attach_url(): void {
+        // v0.8.0 contract: the token is registered as a DuckDB persistent
+        // secret (CREATE OR REPLACE PERSISTENT SECRET) and the ATTACH URL
+        // is `md:dbname` only — no `?motherduck_token=…` query parameter.
+        // Mirrors the production composition (we can't call the real parent
+        // constructor in tests because no PECL/CLI backend is available).
         $stub_class = new class(['motherduck_token' => 'tok_xyz', 'motherduck_database' => 'my_db']) extends MxChat_DuckDB_MotherDuck_Connection {
             public static $init_capture = null;
             public function __construct(array $opts) {
-                // Replicate the parent's validation (otherwise we can't be
-                // sure the production behaviour matches), then capture the
-                // init_sql composition without invoking the real backend.
-                $token = (string) ($opts['motherduck_token'] ?? '');
-                $database = (string) ($opts['motherduck_database'] ?? 'my_db');
-                $init = [
-                    "INSTALL motherduck",
-                    "LOAD motherduck",
-                    sprintf("ATTACH 'md:%s?motherduck_token=%s'", $database, str_replace("'", "''", $token)),
+                $token = (string) $opts['motherduck_token'];
+                $database = (string) $opts['motherduck_database'];
+                $escaped_token = str_replace("'", "''", $token);
+                self::$init_capture = [
+                    'INSTALL motherduck',
+                    'LOAD motherduck',
+                    sprintf("CREATE OR REPLACE PERSISTENT SECRET mxchat_motherduck (TYPE motherduck, TOKEN '%s')", $escaped_token),
+                    sprintf("ATTACH 'md:%s'", $database),
                     sprintf('USE "%s"', $database),
                 ];
-                self::$init_capture = $init;
             }
         };
         $captured = $stub_class::$init_capture;
 
         $this->assertNotNull($captured);
-        $this->assertCount(4, $captured);
+        $this->assertCount(5, $captured, 'INSTALL + LOAD + CREATE SECRET + ATTACH + USE');
         $this->assertSame('INSTALL motherduck', $captured[0]);
         $this->assertSame('LOAD motherduck', $captured[1]);
-        $this->assertSame("ATTACH 'md:my_db?motherduck_token=tok_xyz'", $captured[2]);
-        $this->assertSame('USE "my_db"', $captured[3]);
+        $this->assertStringContainsString('PERSISTENT SECRET mxchat_motherduck', $captured[2]);
+        $this->assertStringContainsString("TOKEN 'tok_xyz'", $captured[2]);
+
+        // The ATTACH URL is clean — no token leaks into the SQL piped to stdin.
+        $this->assertSame("ATTACH 'md:my_db'", $captured[3]);
+        $this->assertStringNotContainsString('motherduck_token', $captured[3],
+            'ATTACH URL must NOT carry the token since we use the persistent secret');
+
+        $this->assertSame('USE "my_db"', $captured[4]);
     }
 
     public function test_init_sql_escapes_single_quotes_in_token(): void {
         // Tokens shouldn't contain single quotes in practice (MotherDuck
         // issues JWT-like strings) but defence-in-depth: if one slips
-        // through, ATTACH must still be valid SQL.
+        // through, the CREATE SECRET literal must remain valid SQL.
         $captured = null;
         new class(['motherduck_token' => "tok'with'quotes", 'motherduck_database' => 'd'], $captured) extends MxChat_DuckDB_MotherDuck_Connection {
             public function __construct(array $opts, &$captured) {
                 $token = (string) $opts['motherduck_token'];
-                $database = (string) $opts['motherduck_database'];
-                $captured = sprintf("ATTACH 'md:%s?motherduck_token=%s'", $database, str_replace("'", "''", $token));
+                $escaped_token = str_replace("'", "''", $token);
+                $captured = sprintf("CREATE OR REPLACE PERSISTENT SECRET mxchat_motherduck (TYPE motherduck, TOKEN '%s')", $escaped_token);
             }
         };
         $this->assertStringContainsString("tok''with''quotes", $captured);

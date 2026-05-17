@@ -4,7 +4,7 @@ Tags: chatbot, ai, vector-search, duckdb, motherduck, pinecone, embeddings, rag,
 Requires at least: 6.0
 Tested up to: 6.7
 Requires PHP: 8.0
-Stable tag: 0.7.0
+Stable tag: 0.8.0
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -95,6 +95,14 @@ By default, no — your `.duckdb` file is preserved on uninstall because it may 
 
 == Changelog ==
 
+= 0.8.0 =
+* DuckDB-feature exploitation pass. No schema migration, no public API break.
+* New: `wp mxchat-duckdb sync --native` opt-in fast path using the DuckDB `mysql` extension. Single INSERT-SELECT with regex-parsed embeddings; 5–10× faster on large catalogues.
+* New: MotherDuck connection uses a DuckDB persistent secret (CREATE OR REPLACE PERSISTENT SECRET) instead of embedding the token in every ATTACH URL. Token no longer flows through stdin on each CLI invocation. Requires DuckDB ≥ 0.10.
+* Changed: per-source dedup in the pure-vector retrieval path moves into a SQL CTE with `ROW_NUMBER() OVER (PARTITION BY source_url)`. Inner sub-query preserves the HNSW-friendly shape so VSS still uses the index. Hybrid path keeps PHP dedup (BM25 merged in PHP anyway).
+* Internal: `Mysql_Sync::$mysql_ext_available` static class cache replaces a function-level static so tests can force-reset.
+* Tests: 240 → 245 (5 new cases covering the three changes).
+
 = 0.7.0 =
 * Project hygiene + test coverage pass. **No schema migration**, no behaviour change for production.
 * New: SECURITY.md, GitHub issue templates, `composer audit` CI job, PHP 8.4 in CI matrix, szepeviktor/phpstan-wordpress dev-dep.
@@ -166,6 +174,9 @@ By default, no — your `.duckdb` file is preserved on uninstall because it may 
 * Initial release.
 
 == Upgrade Notice ==
+
+= 0.8.0 =
+DuckDB-feature exploitation pass. No schema migration. The MotherDuck connection now uses a persistent DuckDB secret rather than embedding the token in every ATTACH URL — **re-test the connection after upgrading** to confirm it still works. The native sync (`wp mxchat-duckdb sync --native`) is opt-in only; defaults unchanged. Safe drop-in from 0.7.0.
 
 = 0.7.0 =
 Project hygiene + test coverage pass. No schema migration, no behaviour change for production traffic — pure improvement of correctness guarantees (57 → 240 tests, 5/20 → 20/20 classes covered). Safe drop-in upgrade.

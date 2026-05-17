@@ -42,17 +42,28 @@ class MxChat_DuckDB_MotherDuck_Connection extends MxChat_DuckDB_Embedded_Connect
         $local_opts = $opts;
         $local_opts['db_path'] = ':memory:';
 
+        // Use a DuckDB persistent secret rather than embedding the token in
+        // every ATTACH URL. Three wins:
+        //   1. Security: the token no longer flows through the SQL script piped
+        //      to the CLI's stdin on every query — it lives in
+        //      ~/.duckdb/stored_secrets/ as a per-server credential.
+        //   2. Cleanliness: ATTACH is `'md:dbname'` (readable) instead of
+        //      `'md:dbname?motherduck_token=<256-byte JWT>'`.
+        //   3. Operability: rotating the token in plugin settings re-runs
+        //      CREATE OR REPLACE on the next query, transparently.
+        // The CREATE OR REPLACE makes it idempotent so multiple plugin
+        // instances on the same server (or a token rotation) stay in sync.
+        // Requires DuckDB ≥ 0.10 + the motherduck extension ≥ 0.6, both
+        // current on every install where the plugin actually works.
+        $escaped_token = str_replace("'", "''", $token);
         $init = [
-            "INSTALL motherduck",
-            "LOAD motherduck",
-            // Token is interpolated into SQL; we constrain the DB name above and
-            // assume the token is a well-formed JWT-like string from MotherDuck.
-            // Single quotes inside the token (impossible in practice) are doubled.
+            'INSTALL motherduck',
+            'LOAD motherduck',
             sprintf(
-                "ATTACH 'md:%s?motherduck_token=%s'",
-                $database,
-                str_replace("'", "''", $token)
+                "CREATE OR REPLACE PERSISTENT SECRET mxchat_motherduck (TYPE motherduck, TOKEN '%s')",
+                $escaped_token
             ),
+            sprintf("ATTACH 'md:%s'", $database),
             sprintf('USE "%s"', $database),
         ];
 

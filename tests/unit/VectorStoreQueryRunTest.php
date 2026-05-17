@@ -120,17 +120,26 @@ final class VectorStoreQueryRunTest extends TestCase {
 
     // ─── Dedup over-fetch ─────────────────────────────────────────────────
 
-    public function test_dedup_per_source_over_fetches_top_k_times_three(): void {
+    public function test_dedup_per_source_uses_sql_cte_with_row_number(): void {
+        // v0.8.0: pure-vector + dedup now uses a CTE with
+        // ROW_NUMBER() OVER (PARTITION BY source_url) so DuckDB does the
+        // dedup in-engine. The inner sub-query keeps the HNSW-friendly
+        // shape; the outer wrapper picks rn=1 per source_url (and lets
+        // empty-URL rows through, mirroring the PHP semantics).
         [$query, $conn] = $this->makeQuery(['dedup_per_source' => true]);
         $query->run([0.1, 0.2, 0.3], 10, 'default', []);
 
-        $this->assertNotEmpty($conn->log);
         $sql = end($conn->log);
-        // top_k=10 × 3 = 30 → LIMIT 30. This is the v0.6.0 fix: the previous
-        // version used LIMIT 10 and lost rows whenever dedup collapsed
-        // multiple chunks from the same source_url.
+        $this->assertStringContainsString('WITH candidates AS', $sql,
+            'dedup_per_source on → SQL must wrap in a CTE');
+        $this->assertStringContainsString('ROW_NUMBER() OVER (PARTITION BY source_url ORDER BY score DESC)', $sql,
+            'dedup CTE must use ROW_NUMBER over source_url');
+        $this->assertStringContainsString("source_url = '' OR rn = 1", $sql,
+            'empty-URL rows must pass through (preserve PHP dedup_per_source semantics)');
         $this->assertStringContainsString('LIMIT 30', $sql,
-            'dedup_per_source on → SQL LIMIT must be top_k × 3 so dedup leaves enough rows for top_k');
+            'inner candidates LIMIT must over-fetch ×3 so the outer dedup has enough rows');
+        $this->assertStringContainsString('LIMIT 10', $sql,
+            'outer LIMIT must equal the requested top_k');
     }
 
     public function test_dedup_off_uses_plain_top_k_limit(): void {
@@ -140,6 +149,31 @@ final class VectorStoreQueryRunTest extends TestCase {
         $sql = end($conn->log);
         $this->assertStringContainsString('LIMIT 10', $sql,
             'dedup off → SQL LIMIT must equal the requested top_k');
+        $this->assertStringNotContainsString('WITH candidates AS', $sql,
+            'dedup off → no CTE wrapper');
+        $this->assertStringNotContainsString('ROW_NUMBER', $sql);
+    }
+
+    public function test_hybrid_path_still_uses_php_dedup_with_over_fetch(): void {
+        // Hybrid keeps PHP-side dedup (the BM25 + vector merge happens in
+        // PHP anyway). The over-fetch ×3 lives in run()'s hybrid branch.
+        $bm25_rows = []; // empty BM25 → falls back to vector-only inside query_hybrid
+        $query_text_supplier = function () { return 'a user query string'; };
+
+        // Install the query_text filter so hybrid actually fires.
+        $GLOBALS['__test_filter_overrides']['mxchat_duckdb_query_text'] = 'a user query string';
+        try {
+            [$query, $conn] = $this->makeQuery(['hybrid_enabled' => true, 'dedup_per_source' => true]);
+            $query->run([0.1, 0.2, 0.3], 10, 'default', []);
+        } finally {
+            $GLOBALS['__test_filter_overrides'] = [];
+        }
+
+        $log = implode("\n", $conn->log);
+        // Inner vector leg of hybrid uses LIMIT max(top_k*4, 50) = max(40,50) = 50.
+        // Plus a BM25 leg query. Neither uses the SQL CTE we added in v0.8.0.
+        $this->assertStringNotContainsString('WITH candidates AS', $log,
+            'hybrid path must NOT use the SQL dedup CTE (PHP dedup runs in run() instead)');
     }
 
     // ─── Rerank hook ──────────────────────────────────────────────────────
