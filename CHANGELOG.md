@@ -7,9 +7,34 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **`uninstall.php` was leaking three sidecar options across reinstalls**:
+  `mxchat_duckdb_cache_gen` (added in 0.6.0), `mxchat_duckdb_reprocess_state`
+  and `mxchat_duckdb_pinecone_migration_state` (both added in 0.4.0) weren't
+  in the delete list. Fixed by moving the option list into a single array
+  with an inline pointer to `docs/CONFIGURATION.md → Sidecar options` so a
+  future addition is harder to miss.
+- **`wp mxchat-duckdb cache --flush` still used the legacy `LIKE DELETE`**
+  on `wp_options` instead of the O(1) generation-counter bump introduced in
+  v0.6.0. Migrated to `MxChat_DuckDB_Plugin::bump_cache_generation()`; the
+  command now also reports the before / after generation numbers.
+- **`wp mxchat-duckdb sync` progress bar jumped from 0 % to 100 %** at the
+  first batch (the legacy code called `make_progress_bar(…, 1)` and then
+  tried to tick by the total). The bar is now lazily created on the first
+  callback with the actual total, and subsequent callbacks tick by the
+  per-batch delta.
+- **Two French strings were hardcoded in `assets/admin.js`** ("vecteurs"
+  suffix on the test-connection + sync-complete status lines) bypassing the
+  `mxchatDuckDB.i18n.*` localisation surface. New `vectorsSuffix` i18n key
+  added; `fr_FR.po` updated, `.mo` recompiled.
+
 ### Planned
 
-- Submit upstream patch (`mxchat_pre_vector_query` filter, WP-canonical `pre_*` convention) to mxchat-basic. The legacy `mxchat_pinecone_matches_override` hook stays registered for installs that applied the previous patch contract.
+- Submit upstream patch (`mxchat_pre_vector_query` filter, WP-canonical
+  `pre_*` convention) to mxchat-basic. The legacy
+  `mxchat_pinecone_matches_override` hook stays registered for installs
+  that applied the previous patch contract.
 - PDF / attachment reprocessing.
 - Per-bot configuration UI for multi-bot installs.
 - Built-in cross-encoder reranker (Cohere Rerank / BGE-reranker).

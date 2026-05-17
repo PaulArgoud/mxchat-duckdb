@@ -26,7 +26,7 @@
                     if (resp && resp.success) {
                         setStatus(
                             mxchatDuckDB.i18n.ok + ' — ' + resp.data.backend +
-                            ' (' + resp.data.count + ' vecteurs)',
+                            ' (' + resp.data.count + ' ' + mxchatDuckDB.i18n.vectorsSuffix + ')',
                             'ok'
                         );
                     } else {
@@ -50,7 +50,7 @@
                 .done(function (resp) {
                     if (resp && resp.success) {
                         setStatus(
-                            mxchatDuckDB.i18n.syncComplete + ' (' + resp.data.synced + ' vecteurs)',
+                            mxchatDuckDB.i18n.syncComplete + ' (' + resp.data.synced + ' ' + mxchatDuckDB.i18n.vectorsSuffix + ')',
                             'ok'
                         );
                         setTimeout(function () { window.location.reload(); }, 1500);

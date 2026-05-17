@@ -329,3 +329,7 @@ msgstr "Host (pour MxChat)"
 #: admin/views/settings.php
 msgid "Api-Key"
 msgstr "Clé API"
+
+#. translators: short suffix shown after a vector count in admin status messages
+msgid "vectors"
+msgstr "vecteurs"

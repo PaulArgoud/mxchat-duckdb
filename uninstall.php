@@ -70,11 +70,22 @@ function mxchat_duckdb_uninstall_cleanup_site(bool $delete_data): void {
         : '';
 
     // ── Options ─────────────────────────────────────────────────────────
-    delete_option('mxchat_duckdb_options');
-    delete_option('mxchat_duckdb_proxy_token');
-    delete_option('mxchat_duckdb_proxy_token_map');
-    delete_option('mxchat_duckdb_metrics');
-    delete_option('mxchat_duckdb_delete_data_on_uninstall');
+    // Keep this list in sync with docs/CONFIGURATION.md → Sidecar options.
+    // Anything the plugin writes via update_option() must be deleted here so
+    // a reinstall starts from a truly clean slate.
+    $sidecar_options = [
+        'mxchat_duckdb_options',                    // main settings bundle
+        'mxchat_duckdb_proxy_token',                // legacy global proxy token
+        'mxchat_duckdb_proxy_token_map',            // per-namespace token map
+        'mxchat_duckdb_metrics',                    // rolling latency histogram + counters
+        'mxchat_duckdb_cache_gen',                  // O(1) cache-invalidation counter (v0.6.0+)
+        'mxchat_duckdb_reprocess_state',            // Action Scheduler reprocess snapshot (v0.4.0+)
+        'mxchat_duckdb_pinecone_migration_state',   // resumable Pinecone import token (v0.4.0+)
+        'mxchat_duckdb_delete_data_on_uninstall',   // opt-in flag itself
+    ];
+    foreach ($sidecar_options as $opt) {
+        delete_option($opt);
+    }
 
     // ── Scheduled cron ──────────────────────────────────────────────────
     wp_clear_scheduled_hook('mxchat_duckdb_incremental_sync');

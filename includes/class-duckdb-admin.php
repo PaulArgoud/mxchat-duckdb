@@ -79,6 +79,8 @@ class MxChat_DuckDB_Admin {
                 'ok'                => __('OK', 'mxchat-duckdb'),
                 'error'             => __('Error', 'mxchat-duckdb'),
                 'syncComplete'      => __('Sync complete', 'mxchat-duckdb'),
+                /* translators: short suffix shown after a vector count in admin status messages */
+                'vectorsSuffix'     => __('vectors', 'mxchat-duckdb'),
                 /* translators: 1: done count, 2: total count */
                 'reprocessing'      => __('Reprocessing %1$d / %2$d…', 'mxchat-duckdb'),
                 /* translators: 1: processed count, 2: failed count */

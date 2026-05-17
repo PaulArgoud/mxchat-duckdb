@@ -93,12 +93,22 @@ class MxChat_DuckDB_CLI {
      */
     public function sync($args, $assoc_args) {
         try {
-            $progress = \WP_CLI\Utils\make_progress_bar('Syncing', 1);
-            $count = MxChat_DuckDB_Sync::instance()->full_sync(function ($done, $total) use ($progress) {
-                static $set = false;
-                if (!$set) { $progress->tick($total); $set = true; }
-            });
-            $progress->finish();
+            // The progress bar needs the total up-front; full_sync() only
+            // discovers it on the first callback. Defer creation to that point
+            // and tick by the delta on subsequent callbacks.
+            $progress = null;
+            $last_done = 0;
+            $count = MxChat_DuckDB_Sync::instance()->full_sync(
+                function ($done, $total) use (&$progress, &$last_done) {
+                    if ($progress === null) {
+                        $progress = \WP_CLI\Utils\make_progress_bar('Syncing', max(1, (int) $total));
+                    }
+                    $delta = max(0, (int) $done - $last_done);
+                    if ($delta > 0) $progress->tick($delta);
+                    $last_done = (int) $done;
+                }
+            );
+            if ($progress) $progress->finish();
             \WP_CLI::success(sprintf('Synced %d vectors.', $count));
         } catch (\Throwable $e) {
             \WP_CLI::error($e->getMessage());
@@ -193,7 +203,11 @@ class MxChat_DuckDB_CLI {
     }
 
     /**
-     * Flush the query result cache (transient layer).
+     * Flush the query result cache by bumping the generation counter.
+     *
+     * O(1) since v0.6.0 — existing transients become unreachable and expire
+     * via their TTL; no `LIKE DELETE` over wp_options. See
+     * MxChat_DuckDB_Plugin::bump_cache_generation().
      *
      * ## OPTIONS
      * [--flush]
@@ -207,14 +221,13 @@ class MxChat_DuckDB_CLI {
             \WP_CLI::log('Pass --flush to confirm.');
             return;
         }
-        global $wpdb;
-        $rows = (int) $wpdb->query(
-            "DELETE FROM {$wpdb->options} WHERE option_name LIKE '\\_transient\\_mxd\\_q\\_%' ESCAPE '\\\\'"
-        );
-        $wpdb->query(
-            "DELETE FROM {$wpdb->options} WHERE option_name LIKE '\\_transient\\_timeout\\_mxd\\_q\\_%' ESCAPE '\\\\'"
-        );
-        \WP_CLI::success(sprintf('Flushed %d cached query results.', $rows));
+        $before = MxChat_DuckDB_Plugin::cache_generation();
+        MxChat_DuckDB_Plugin::bump_cache_generation();
+        \WP_CLI::success(sprintf(
+            'Cache generation bumped (%d → %d). Existing cached results are now unreachable and will expire via TTL.',
+            $before,
+            MxChat_DuckDB_Plugin::cache_generation()
+        ));
     }
 
     /**
