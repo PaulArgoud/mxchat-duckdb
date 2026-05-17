@@ -41,6 +41,7 @@ class MxChat_DuckDB_Mysql_Sync {
         }
 
         $done = 0;
+        $skipped = 0;
         $offset = 0;
         while ($offset < $total) {
             $select = self::build_select($columns, $kb);
@@ -55,7 +56,11 @@ class MxChat_DuckDB_Mysql_Sync {
             $vectors = [];
             foreach ($batch as $row) {
                 $v = self::row_to_vector($row, $columns);
-                if ($v !== null) $vectors[] = $v;
+                if ($v !== null) {
+                    $vectors[] = $v;
+                } else {
+                    $skipped++;
+                }
             }
 
             if (!empty($vectors)) {
@@ -68,6 +73,8 @@ class MxChat_DuckDB_Mysql_Sync {
                 $progress(min($offset, $total), $total);
             }
         }
+
+        self::log_skipped_summary('full_sync', $done, $skipped, $total);
 
         MxChat_DuckDB_Options::update([
             'last_sync_at'    => time(),
@@ -108,15 +115,22 @@ class MxChat_DuckDB_Mysql_Sync {
             }
 
             $vectors = [];
+            $skipped = 0;
             foreach ($rows as $row) {
                 $v = self::row_to_vector($row, $columns);
-                if ($v !== null) $vectors[] = $v;
+                if ($v !== null) {
+                    $vectors[] = $v;
+                } else {
+                    $skipped++;
+                }
             }
 
             $count = 0;
             if (!empty($vectors)) {
                 $count = $store->upsert($vectors);
             }
+
+            self::log_skipped_summary('incremental_sync', $count, $skipped, count($rows));
 
             MxChat_DuckDB_Options::update([
                 'last_sync_at' => time(),
@@ -135,6 +149,21 @@ class MxChat_DuckDB_Mysql_Sync {
      * AJAX hook fired by mxchat's own delete action. We re-check the nonce +
      * capability ourselves instead of relying on mxchat's check running after
      * — defense in depth against priority changes upstream.
+     *
+     * Two nonces are accepted:
+     *   - `mxchat_delete_pinecone_prompt` — mxchat's own, sent by current
+     *     versions when the user clicks Delete in the KB admin.
+     *   - `mxchat_duckdb_admin` — this plugin's, used as a graceful fallback
+     *     for installs where mxchat's UI doesn't ship the delete nonce yet.
+     *
+     * Why this is safe even though `mxchat_duckdb_admin` is used elsewhere for
+     * non-destructive AJAX (test connection, stats, …): every nonce check is
+     * AND-ed with `current_user_can('manage_options')` on the very next line,
+     * and every other endpoint that mints / consumes the `mxchat_duckdb_admin`
+     * nonce also gates on `manage_options`. So an attacker who somehow has
+     * this nonce already has admin capability — at which point they can
+     * trigger destructive endpoints directly. The dual-nonce only widens the
+     * legitimate-caller set, not the attack surface.
      */
     public function cascade_delete_handler(): void {
         $opts = MxChat_DuckDB_Options::get();
@@ -192,6 +221,24 @@ class MxChat_DuckDB_Mysql_Sync {
         return $cache[$kb_table] = [
             'has_bot_id' => isset($set['bot_id']),
         ];
+    }
+
+    /**
+     * Emit a one-line summary when a sync run skipped any rows. Silent on the
+     * happy path (no skips) and below a 1% threshold so the log doesn't fill
+     * with noise on healthy installs where the occasional malformed row is
+     * normal. Above 1% we log unconditionally — that's the signal that
+     * something is actively corrupting the KB (model change without re-embed,
+     * truncated rows from a failed import, etc.).
+     */
+    private static function log_skipped_summary(string $context, int $upserted, int $skipped, int $scanned): void {
+        if ($skipped === 0) return;
+        $threshold_breached = $scanned > 0 && ($skipped / $scanned) > 0.01;
+        if (!$threshold_breached && !(defined('WP_DEBUG') && WP_DEBUG)) return;
+        error_log(sprintf(
+            '[mxchat-duckdb] %s: skipped %d of %d rows (no usable embedding); upserted %d',
+            $context, $skipped, $scanned, $upserted
+        ));
     }
 
     private static function build_select(array $columns, string $kb_table): string {

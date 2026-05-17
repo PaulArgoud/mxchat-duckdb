@@ -6,17 +6,49 @@ Every filter the plugin applies, with signature, purpose, and a short example. U
 
 | Filter | Signature | Default | Purpose |
 |---|---|---|---|
+| [`mxchat_pre_vector_query`](#mxchat_pre_vector_query) | `(?array $previous, array $ctx): ?array` | `null` | WordPress-canonical `pre_*` short-circuit hook on the runtime RAG path. Return a Pinecone-shaped response to bypass the HTTP call. Wired automatically by this plugin when the upstream patch is present (see [`patches/README.md`](../patches/README.md)). |
 | [`mxchat_duckdb_post_content`](#mxchat_duckdb_post_content) | `(string $content, WP_Post $post): string` | title + `the_content` filters + stripped tags | Customise the text content sent to MxChat's ingestion pipeline during reprocess. |
 | [`mxchat_duckdb_sync_bot_id`](#mxchat_duckdb_sync_bot_id) | `(string $bot_id, object $row): string` | row's `bot_id` column, else `'default'` | Override the `bot_id` derived from a MySQL KB row. |
 | [`mxchat_duckdb_upsert_chunk_size`](#mxchat_duckdb_upsert_chunk_size) | `(int $size, bool $is_remote): int` | 250 local, 50 MotherDuck | Override the batch size for `INSERT OR REPLACE`. |
-| [`mxchat_duckdb_proxy_rate_limit_per_minute`](#mxchat_duckdb_proxy_rate_limit_per_minute) | `(int $max): int` | 120 | Per-minute request cap on the Pinecone-proxy REST endpoints. `0` disables. |
+| [`mxchat_duckdb_proxy_rate_limit_per_minute`](#mxchat_duckdb_proxy_rate_limit_per_minute) | `(int $max, string $namespace): int` | 120 (per namespace) | Per-namespace per-minute request cap on the Pinecone-proxy REST endpoints. `0` disables. |
 | [`mxchat_duckdb_query_text`](#mxchat_duckdb_query_text) | `(string $text, string $bot_id, array $filter): string` | `''` | Supply the user query text for hybrid BM25 scoring. Empty = BM25 leg disabled. |
 | [`mxchat_duckdb_rerank_matches`](#mxchat_duckdb_rerank_matches) | `(array $matches, array $embedding, string $bot_id, array $filter, string $query_text): array` | identity | Custom reranker hook — return a re-ordered top-K. |
 | [`mxchat_duckdb_max_retries`](#mxchat_duckdb_max_retries) | `(int $n): int` | 3 | Retry attempts for idempotent SQL on transient errors. |
+| [`mxchat_duckdb_cli_timeout_seconds`](#mxchat_duckdb_cli_timeout_seconds) | `(int $seconds): int` | 30 | Deadline (s) for a single DuckDB CLI invocation; the CLI is `proc_terminate`'d past this point. Minimum 1. |
 | [`mxchat_duckdb_health_public`](#mxchat_duckdb_health_public) | `(bool $allow, WP_REST_Request $req): bool` | `true` | Gate the `/health` endpoint behind authentication. |
 | [`mxchat_duckdb_compactor_max_deletes`](#mxchat_duckdb_compactor_max_deletes) | `(int $max): int` | 5000 | Per-run delete cap for the orphan compactor. |
 
 ## Detailed reference
+
+### `mxchat_pre_vector_query`
+
+WordPress-canonical `pre_*` short-circuit hook on the **runtime RAG path** (the one fired during a chat conversation). Same convention as `pre_get_posts`, `pre_user_query`, `pre_option_*`: return `null` to fall through to default behaviour (the Pinecone HTTP call), return an array to bypass it entirely.
+
+Requires the ~12-line upstream patch in [`patches/README.md`](../patches/README.md). When the patch is present, this plugin hooks it automatically and serves matches from DuckDB before MxChat hits the network. When the patch is absent, the proxy path (Option B) takes over transparently.
+
+```php
+// Context array shape:
+//   [
+//     'vector'    => float[],   // the query embedding
+//     'top_k'     => int,       // requested result count
+//     'namespace' => string,    // Pinecone namespace
+//     'bot_id'    => string,    // mxchat bot id
+//   ]
+//
+// Return shape (when short-circuiting):
+//   ['matches' => [{id, score, metadata}, …], 'namespace' => '…']
+//
+// Return null to keep the default Pinecone HTTP path.
+
+add_filter('mxchat_pre_vector_query', function ($previous, array $ctx) {
+    if ($previous !== null) return $previous; // another handler already answered
+    if ($ctx['namespace'] !== 'my_private_bot') return null; // not our scope
+
+    // Hand off to a custom backend, e.g. an in-house Qdrant proxy.
+    $matches = my_qdrant_query($ctx['vector'], $ctx['top_k']);
+    return ['matches' => $matches, 'namespace' => $ctx['namespace']];
+}, 5, 2); // priority 5 to win over the plugin's own handler at priority 10
+```
 
 ### `mxchat_duckdb_post_content`
 
@@ -60,10 +92,18 @@ add_filter('mxchat_duckdb_upsert_chunk_size', fn(int $n, bool $remote): int => $
 
 ### `mxchat_duckdb_proxy_rate_limit_per_minute`
 
-The REST proxy (Option B) caps requests at 120/min per site to protect against a misbehaving client saturating CPU with HNSW searches. Raise it for high-traffic chatbots, set `0` to disable entirely.
+The REST proxy (Option B) caps requests at **120/min per namespace** (i.e. per bot, since the namespace is the bot id under the hood) to protect against a misbehaving client saturating CPU with HNSW searches. The filter receives the namespace so per-tenant ceilings are tunable. Raise it for high-traffic chatbots, set `0` to disable entirely.
 
 ```php
+// Same ceiling everywhere:
 add_filter('mxchat_duckdb_proxy_rate_limit_per_minute', fn() => 600);
+
+// Or per-bot:
+add_filter('mxchat_duckdb_proxy_rate_limit_per_minute', function (int $max, string $ns): int {
+    if ($ns === 'support_fr') return 1000; // hot bot
+    if ($ns === '_global')    return 60;   // legacy wildcard tokens — keep low
+    return $max;
+}, 10, 2);
 ```
 
 ### `mxchat_duckdb_query_text`
@@ -110,6 +150,18 @@ The embedded backend retries idempotent SQL (SELECT/WITH/PRAGMA/SHOW/DESCRIBE/EX
 
 ```php
 add_filter('mxchat_duckdb_max_retries', fn() => 5);
+```
+
+### `mxchat_duckdb_cli_timeout_seconds`
+
+The DuckDB CLI fallback path (used when the PECL `duckdb` extension is not loaded) runs under a non-blocking `stream_select` deadline so a hung CLI doesn't freeze the PHP-FPM worker until the web-server timeout. Default 30 s, minimum 1 s. Lower it for read-heavy admin pages, raise it for long-running imports or large Parquet roundtrips.
+
+```php
+// Tight cap for chat queries (most should complete in well under a second);
+// keep imports running longer:
+add_filter('mxchat_duckdb_cli_timeout_seconds', function (int $s): int {
+    return wp_doing_cron() ? 120 : 5;
+});
 ```
 
 ### `mxchat_duckdb_health_public`

@@ -47,6 +47,7 @@ The plugin also writes a handful of non-autoloaded options outside the main bund
 | `mxchat_duckdb_metrics` | Rolling 1-hour latency histogram + named counters. |
 | `mxchat_duckdb_reprocess_state` | Snapshot of the most recent Action-Scheduler-driven reprocess batch. |
 | `mxchat_duckdb_pinecone_migration_state` | Resumption token + counters for an in-flight Pinecone → DuckDB migration. |
+| `mxchat_duckdb_cache_gen` | Monotonic integer (starts at 1). Woven into every query-cache transient key; bumped by writes via `MxChat_DuckDB_Plugin::bump_cache_generation()` so cached top-K results become unreachable in O(1) without a `LIKE DELETE` over `wp_options`. Orphans expire via `query_cache_ttl`. |
 
 All of the above are deleted on plugin uninstall via [`uninstall.php`](../uninstall.php).
 
@@ -68,4 +69,4 @@ Both guards are enforced in `MxChat_DuckDB_Options::sanitize_for_save()` with an
 | Vectors (MotherDuck mode) | `md:<database>.main.mxchat_vectors` | The schema meta table lives next to it as `mxchat_duckdb_schema_meta`. |
 | Translation catalogs | `languages/mxchat-duckdb-<locale>.mo` | Loaded via `load_plugin_textdomain()`. |
 | Metrics window | `wp_options['mxchat_duckdb_metrics']` | Rolling 1-hour latency samples + counters; `MxChat_DuckDB_Metrics::reset()` clears. |
-| Query result cache | `wp_options['_transient_mxd_q_*']` | Transient layer, invalidated on every write through the vector store. |
+| Query result cache | `wp_options['_transient_mxd_q_<gen>_*']` | Transient layer, keyed by the generation counter (`mxchat_duckdb_cache_gen`). Writes bump the counter so the entire cache namespace becomes unreachable in O(1); orphans expire by TTL. |

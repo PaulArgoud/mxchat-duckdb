@@ -31,10 +31,26 @@ class MxChat_DuckDB_Compactor {
     public function register_hooks(): void {
         add_action(self::CRON_HOOK, [$this, 'run']);
         if (!wp_next_scheduled(self::CRON_HOOK)) {
-            // 03:17 site-local each day; daily schedule + small offset to avoid
-            // colliding with the hourly incremental sync at the top of the hour.
-            wp_schedule_event(time() + 3600, 'daily', self::CRON_HOOK);
+            wp_schedule_event(self::next_run_timestamp(), 'daily', self::CRON_HOOK);
         }
+    }
+
+    /**
+     * Anchor the first run at 03:00 UTC + a deterministic per-install jitter
+     * (0–59 min, derived from home_url()) so:
+     *   - we land in a low-traffic window (~04:00–05:00 in most EU timezones);
+     *   - many installs running this plugin don't all hit MotherDuck at the
+     *     same UTC minute, which would otherwise look like a coordinated load
+     *     spike to the upstream;
+     *   - the schedule is stable across activations on the same site (jitter
+     *     is hashed from a value that doesn't change).
+     */
+    private static function next_run_timestamp(): int {
+        $jitter_minutes = abs(crc32(home_url())) % 60;
+        $base = strtotime('today 03:00 UTC');
+        if ($base === false) $base = time();
+        $first = $base + ($jitter_minutes * MINUTE_IN_SECONDS);
+        return $first > time() ? $first : $first + DAY_IN_SECONDS;
     }
 
     public function run(): array {
@@ -63,24 +79,18 @@ class MxChat_DuckDB_Compactor {
         }
     }
 
+    const KB_PAGE_SIZE = 5000;
+
     /**
-     * Strategy: pull every known mxchat KB vector_id from MySQL, then delete
-     * everything in DuckDB that isn't in that set. For very large KBs we chunk
-     * the DELETE to stay under MotherDuck body limits.
+     * Strategy: build a set of "alive" vector_ids by paging through the MySQL
+     * KB (avoids one ~20 MB allocation for big KBs — PHP can free each batch's
+     * row objects as we move on, keeping only the much smaller id-only map
+     * around). Then page through DuckDB and delete everything that isn't in
+     * that set. DELETE is chunked to 100 IDs at a time to stay under
+     * MotherDuck HTTP body limits.
      */
     private function prune_orphans(int $max_deletes): int {
-        global $wpdb;
-        $kb = $wpdb->prefix . 'mxchat_system_prompt_content';
-
-        // Collect the set of "alive" vector IDs as mxchat sees them.
-        $rows = $wpdb->get_results("SELECT id, url AS source_url FROM {$kb}");
-        if ($rows === null) {
-            throw new RuntimeException('MySQL KB table unreadable; aborting compaction.');
-        }
-        $alive = [];
-        foreach ($rows as $r) {
-            $alive[MxChat_DuckDB_Sync::vector_id_for_row($r)] = true;
-        }
+        $alive = $this->load_alive_ids();
 
         $store = new MxChat_DuckDB_Vector_Store();
         $store->ensure_schema();
@@ -133,5 +143,37 @@ class MxChat_DuckDB_Compactor {
             $list
         ));
         return count($ids);
+    }
+
+    /**
+     * Stream mxchat KB rows in pages so a 100k-row KB doesn't allocate ~20 MB
+     * of $wpdb objects in one shot. Returns a vector_id → true map (a few MB
+     * even at 100k entries — orders of magnitude smaller than the row objects).
+     *
+     * @return array<string, true>
+     */
+    private function load_alive_ids(): array {
+        global $wpdb;
+        $kb = $wpdb->prefix . 'mxchat_system_prompt_content';
+
+        $alive = [];
+        $offset = 0;
+        while (true) {
+            $rows = $wpdb->get_results($wpdb->prepare(
+                "SELECT id, url AS source_url FROM {$kb} ORDER BY id LIMIT %d OFFSET %d",
+                self::KB_PAGE_SIZE,
+                $offset
+            ));
+            if ($rows === null) {
+                throw new RuntimeException('MySQL KB table unreadable; aborting compaction.');
+            }
+            if (empty($rows)) break;
+            foreach ($rows as $r) {
+                $alive[MxChat_DuckDB_Sync::vector_id_for_row($r)] = true;
+            }
+            $offset += self::KB_PAGE_SIZE;
+            unset($rows); // let PHP reclaim the batch before fetching the next
+        }
+        return $alive;
     }
 }

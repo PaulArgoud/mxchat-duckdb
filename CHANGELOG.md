@@ -260,8 +260,8 @@ Ops & retrieval-quality pass. Public OSS-grade hygiene.
   token. CLI: `wp mxchat-duckdb migrate-from-pinecone --api-key=… --host=… [--namespace=…]`.
 - **Parquet export / import** — `Vector_Store::export_parquet()` and
   `import_parquet()` use DuckDB's native `COPY ... TO|FROM '...parquet'`.
-  Critical for moving between embedded ⇄ MotherDuck without re-embedding,
-  for backups, and for sharing KBs. CLI: `wp mxchat-duckdb export --path=…`
+  Enables moving between embedded ⇄ MotherDuck without re-embedding,
+  routine backups, and KB sharing. CLI: `wp mxchat-duckdb export --path=…`
   and `wp mxchat-duckdb import --path=…`.
 - **INT8 quantization (experimental)** — `embedding_storage` option toggles
   the embedding column type between `FLOAT[N]` (default) and `TINYINT[N]`.

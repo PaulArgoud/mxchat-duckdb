@@ -199,7 +199,7 @@ Returns `200 OK` + JSON when healthy, `503 Service Unavailable` + error JSON oth
 
 ```json
 {
-  "plugin_version": "0.5.0",
+  "plugin_version": "0.6.0",
   "enabled": true,
   "mode": "motherduck",
   "ext_loaded": true,

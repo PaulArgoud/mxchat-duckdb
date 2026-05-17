@@ -58,15 +58,22 @@ class MxChat_DuckDB_Vector_Store {
     private static ?self $current = null;
 
     /**
-     * Per-request cached store keyed off the current plugin options. Hot REST
-     * handlers (Pinecone proxy, search adapter) call this instead of `new …`
-     * to avoid re-resolving options, re-building the Schema/Query collaborators,
-     * and re-walking the migration short-circuit on every request.
+     * Per-request cached store keyed off the current plugin options. Mutating
+     * options invalidates the cache via reset_current(), which is fired
+     * alongside Connection_Factory::reset_cache() from the options sanitiser.
      *
-     * Mutating options invalidates the cache via reset_current(), which is
-     * fired alongside Connection_Factory::reset_cache() from the options
-     * sanitiser. Tests and CLI paths that want a fresh store can keep using
-     * `new MxChat_DuckDB_Vector_Store()` or pass an explicit connection.
+     * When to use which constructor:
+     *   - `Vector_Store::current()`  →  hot path (every request fires it).
+     *     REST proxy handlers, search adapter, anywhere a chat conversation
+     *     can hit the code per user message.
+     *   - `new MxChat_DuckDB_Vector_Store()`  →  occasional / admin path.
+     *     Bulk sync, CLI commands, Pinecone migrator, settings introspection,
+     *     compactor cron — the option re-read cost is irrelevant compared to
+     *     the work the call is about to do, and a fresh instance avoids
+     *     coupling unit tests to the singleton.
+     *   - `new MxChat_DuckDB_Vector_Store($conn)`  →  health probe + admin
+     *     diagnostics that want to test a specific backend instance instead
+     *     of the cached one.
      */
     public static function current(): self {
         return self::$current ??= new self();
