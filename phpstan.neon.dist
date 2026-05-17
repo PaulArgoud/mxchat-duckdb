@@ -1,0 +1,21 @@
+parameters:
+    level: 6
+    paths:
+        - mxchat-duckdb.php
+        - uninstall.php
+        - includes
+        - admin
+    excludePaths:
+        - vendor
+        - tests/_output
+        - build
+    treatPhpDocTypesAsCertain: false
+    # WordPress globals/functions are dynamically loaded; without WP stubs PHPStan
+    # would scream on every wp_* call. The bootstrap below short-circuits those.
+    bootstrapFiles:
+        - tests/phpstan-bootstrap.php
+    # Most baseline issues come from WP API surface (WP_REST_Request, WP_Post, wpdb…)
+    # not being statically resolvable. Once https://github.com/szepeviktor/phpstan-wordpress
+    # is added as a dev-dep, drop this and bump to level 8.
+    ignoreErrors:
+        - '#Call to an undefined method MxChat_DuckDB_Connection::table_name_quoted\(\)#'

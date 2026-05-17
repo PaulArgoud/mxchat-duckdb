@@ -3,11 +3,21 @@
     "description": "WordPress companion plugin: DuckDB / MotherDuck vector store for MxChat.",
     "type": "wordpress-plugin",
     "license": "GPL-2.0-or-later",
+    "homepage": "https://github.com/paulargoud/mxchat-duckdb",
+    "keywords": ["wordpress", "wordpress-plugin", "mxchat", "duckdb", "motherduck", "vector-search", "rag", "embeddings", "pinecone"],
     "authors": [
         { "name": "Paul Argoud", "email": "paul@argoud.net" }
     ],
+    "support": {
+        "issues": "https://github.com/paulargoud/mxchat-duckdb/issues",
+        "source": "https://github.com/paulargoud/mxchat-duckdb"
+    },
     "require": {
         "php": ">=8.0"
+    },
+    "require-dev": {
+        "phpunit/phpunit": "^10.5",
+        "phpstan/phpstan": "^1.11"
     },
     "autoload": {
         "classmap": [
@@ -16,6 +26,16 @@
         "files": [
             "includes/class-duckdb-cli.php"
         ]
+    },
+    "autoload-dev": {
+        "classmap": [
+            "tests/"
+        ]
+    },
+    "scripts": {
+        "lint": "find . -name '*.php' -not -path './vendor/*' -not -path './tests/_output/*' -print0 | xargs -0 -n1 php -l",
+        "test": "phpunit --testdox",
+        "stan": "phpstan analyse --memory-limit=512M"
     },
     "config": {
         "optimize-autoloader": true,

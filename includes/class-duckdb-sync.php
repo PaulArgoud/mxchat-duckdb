@@ -285,6 +285,49 @@ class MxChat_DuckDB_Sync {
     }
 
     /**
+     * Reprocess a single post — the unit of work consumed by Action Scheduler.
+     * Throws on hard failures (Action Scheduler will record + optionally retry).
+     *
+     * @throws RuntimeException
+     */
+    public function reprocess_single_post(int $post_id, string $bot_id = 'default'): void {
+        if (!class_exists('MxChat_Utils')) {
+            throw new RuntimeException(
+                __('MxChat_Utils is not available — is mxchat-basic activated?', 'mxchat-duckdb')
+            );
+        }
+        $api_key = self::resolve_embedding_api_key($bot_id);
+        if (empty($api_key)) {
+            throw new RuntimeException(
+                __('No embedding API key configured in MxChat.', 'mxchat-duckdb')
+            );
+        }
+
+        $post = get_post($post_id);
+        if (!$post) {
+            throw new RuntimeException(sprintf('Post %d not found.', $post_id));
+        }
+        $content = self::build_post_content($post);
+        if (trim((string) $content) === '') {
+            throw new RuntimeException(sprintf('Post %d has no content to ingest.', $post_id));
+        }
+        $source_url = get_permalink($post_id);
+        if (!$source_url) {
+            throw new RuntimeException(sprintf('Post %d has no permalink.', $post_id));
+        }
+
+        $vector_id = md5($source_url);
+        $content_type = self::map_post_type_to_content_type($post->post_type);
+
+        $result = MxChat_Utils::submit_content_to_db(
+            $content, $source_url, $api_key, $vector_id, $bot_id, $content_type
+        );
+        if (is_wp_error($result)) {
+            throw new RuntimeException('reprocess post ' . $post_id . ': ' . $result->get_error_message());
+        }
+    }
+
+    /**
      * Build the ingestible content for a post. Mirrors what mxchat does in its
      * own ingestion: title + post_content (filtered by `the_content`). Plugin
      * users can extend via the `mxchat_duckdb_post_content` filter to add

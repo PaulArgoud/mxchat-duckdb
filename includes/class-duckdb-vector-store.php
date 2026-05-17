@@ -45,6 +45,7 @@ class MxChat_DuckDB_Vector_Store {
     private int $dim;
     private string $metric;
     private bool $hnsw;
+    private string $storage; // 'float32' | 'int8'
 
     /** Static cache: tracks which (backend, table) combos already had ensure_schema() run. */
     private static array $schema_ensured = [];
@@ -64,6 +65,26 @@ class MxChat_DuckDB_Vector_Store {
         $this->dim    = (int) $opts['embedding_dim'];
         $this->metric = $opts['distance_metric'];
         $this->hnsw   = !empty($opts['hnsw_enabled']);
+        $this->storage = in_array($opts['embedding_storage'] ?? 'float32', ['float32', 'int8'], true)
+            ? $opts['embedding_storage']
+            : 'float32';
+    }
+
+    private function embedding_column_type(): string {
+        return $this->storage === 'int8'
+            ? sprintf('TINYINT[%d]', $this->dim)
+            : sprintf('FLOAT[%d]', $this->dim);
+    }
+
+    /**
+     * Returns the SQL expression that yields a FLOAT[N] usable by VSS, given
+     * the configured storage layout. Identity for float32, list_transform
+     * dequantize for int8.
+     */
+    private function embedding_as_float_sql(): string {
+        return $this->storage === 'int8'
+            ? MxChat_DuckDB_Quantization::sql_dequantize_expression($this->dim)
+            : 'embedding';
     }
 
     /**
@@ -138,7 +159,7 @@ class MxChat_DuckDB_Vector_Store {
             'CREATE TABLE IF NOT EXISTS %s (
                 vector_id        VARCHAR PRIMARY KEY,
                 bot_id           VARCHAR DEFAULT \'default\',
-                embedding        FLOAT[%d],
+                embedding        %s,
                 content          TEXT,
                 source_url       VARCHAR,
                 role_restriction VARCHAR DEFAULT \'public\',
@@ -149,7 +170,7 @@ class MxChat_DuckDB_Vector_Store {
                 created_at       TIMESTAMP DEFAULT current_timestamp
             )',
             $this->quote_ident($this->table),
-            $this->dim
+            $this->embedding_column_type()
         );
         $this->conn->execute($sql);
 
@@ -247,11 +268,15 @@ class MxChat_DuckDB_Vector_Store {
                 ));
             }
 
+            $embedding_for_storage = $this->storage === 'int8'
+                ? MxChat_DuckDB_Quantization::quantize_int8($v['embedding'])
+                : $v['embedding'];
+
             $rows[] = sprintf(
                 '(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)',
                 $this->literal_string((string) $v['vector_id']),
                 $this->literal_string((string) ($v['bot_id'] ?? 'default')),
-                $this->literal_float_array($v['embedding']),
+                $this->literal_int_or_float_array($embedding_for_storage),
                 $this->literal_string((string) ($v['content'] ?? '')),
                 $this->literal_string((string) ($v['source_url'] ?? '')),
                 $this->literal_string((string) ($v['role_restriction'] ?? 'public')),
@@ -661,6 +686,88 @@ class MxChat_DuckDB_Vector_Store {
         return $this->quote_ident($this->table);
     }
 
+    /**
+     * Dump the entire table to a Parquet file on the DuckDB-side filesystem.
+     * For MotherDuck installs, this writes to MotherDuck's storage; for
+     * embedded installs, to the local disk. Caller is responsible for the
+     * path being writable.
+     *
+     * @return int number of rows exported
+     * @throws RuntimeException on SQL error
+     */
+    public function export_parquet(string $path): int {
+        $this->ensure_schema();
+        $safe_path = str_replace("'", "''", $path);
+        $this->conn->execute(sprintf(
+            "COPY %s TO '%s' (FORMAT PARQUET, COMPRESSION ZSTD)",
+            $this->quote_ident($this->table),
+            $safe_path
+        ));
+        $rows = $this->conn->execute(sprintf(
+            'SELECT COUNT(*) AS c FROM %s',
+            $this->quote_ident($this->table)
+        ));
+        return (int) ($rows[0]['c'] ?? 0);
+    }
+
+    /**
+     * Restore rows from a Parquet file produced by export_parquet(). Existing
+     * vectors with the same vector_id are *replaced* (INSERT OR REPLACE).
+     * The Parquet schema must match — we don't try to remap columns.
+     *
+     * @return int number of rows imported
+     * @throws RuntimeException on SQL error or dimension mismatch
+     */
+    public function import_parquet(string $path): int {
+        $this->ensure_schema();
+        $safe_path = str_replace("'", "''", $path);
+
+        // Stage into a temporary view so we can validate dim + count before
+        // touching the live table.
+        $tmp_view = '__mxd_import_' . wp_generate_password(8, false, false);
+        $this->conn->execute(sprintf(
+            "CREATE OR REPLACE TEMP VIEW %s AS SELECT * FROM read_parquet('%s')",
+            $this->quote_ident($tmp_view),
+            $safe_path
+        ));
+        $count_rows = $this->conn->execute(sprintf('SELECT COUNT(*) AS c FROM %s', $this->quote_ident($tmp_view)));
+        $expected = (int) ($count_rows[0]['c'] ?? 0);
+        if ($expected === 0) return 0;
+
+        $this->conn->execute(sprintf(
+            'INSERT OR REPLACE INTO %s SELECT * FROM %s',
+            $this->quote_ident($this->table),
+            $this->quote_ident($tmp_view)
+        ));
+        $this->conn->execute(sprintf('DROP VIEW IF EXISTS %s', $this->quote_ident($tmp_view)));
+
+        MxChat_DuckDB_Plugin::flush_query_cache();
+        return $expected;
+    }
+
+    /**
+     * Approximate disk/memory footprint of the vectors table, useful for the
+     * admin diagnostics panel. Returns bytes_estimate + row_count.
+     */
+    public function storage_estimate(): array {
+        try {
+            // FLOAT[N] = 4·N bytes per row + metadata. Approximation, not exact.
+            $row_bytes = 4 * $this->dim + 200; // metadata fudge factor
+            $rows = $this->conn->execute(sprintf(
+                'SELECT COUNT(*) AS c FROM %s',
+                $this->quote_ident($this->table)
+            ));
+            $count = (int) ($rows[0]['c'] ?? 0);
+            return [
+                'rows'           => $count,
+                'bytes_estimate' => $count * $row_bytes,
+                'dim'            => $this->dim,
+            ];
+        } catch (\Throwable $e) {
+            return ['rows' => 0, 'bytes_estimate' => 0, 'dim' => $this->dim];
+        }
+    }
+
     // ─────────────────────────────────────────────────────────────────────
 
     private function upsert_chunk_size(): int {
@@ -672,14 +779,15 @@ class MxChat_DuckDB_Vector_Store {
 
     private function score_expression(array $embedding): string {
         $vec = $this->literal_float_array($embedding);
+        $col_sql = $this->embedding_as_float_sql(); // 'embedding' or dequantize expression
         switch ($this->metric) {
             case 'l2sq':
-                return sprintf('(-1.0 * array_distance(embedding, %s::FLOAT[%d]))', $vec, $this->dim);
+                return sprintf('(-1.0 * array_distance(%s, %s::FLOAT[%d]))', $col_sql, $vec, $this->dim);
             case 'ip':
-                return sprintf('array_inner_product(embedding, %s::FLOAT[%d])', $vec, $this->dim);
+                return sprintf('array_inner_product(%s, %s::FLOAT[%d])', $col_sql, $vec, $this->dim);
             case 'cosine':
             default:
-                return sprintf('array_cosine_similarity(embedding, %s::FLOAT[%d])', $vec, $this->dim);
+                return sprintf('array_cosine_similarity(%s, %s::FLOAT[%d])', $col_sql, $vec, $this->dim);
         }
     }
 
@@ -698,6 +806,30 @@ class MxChat_DuckDB_Vector_Store {
 
     private function literal_string(string $val): string {
         return "'" . str_replace("'", "''", $val) . "'";
+    }
+
+    /**
+     * Integer-or-float literal generator used by upsert. INT8 storage takes
+     * the int path (already-quantized values); float32 storage uses the
+     * float path. Both throw on non-numeric components.
+     */
+    private function literal_int_or_float_array(array $arr): string {
+        $parts = [];
+        foreach ($arr as $i => $v) {
+            if (is_int($v) || is_float($v)) {
+                $parts[] = (string) $v;
+            } elseif (is_numeric($v)) {
+                $parts[] = (string) (float) $v;
+            } else {
+                throw new RuntimeException(sprintf(
+                    /* translators: 1: index, 2: PHP type */
+                    __('Non-numeric embedding component at index %1$d (type %2$s). Refusing to write a corrupted vector.', 'mxchat-duckdb'),
+                    $i,
+                    gettype($v)
+                ));
+            }
+        }
+        return '[' . implode(',', $parts) . ']';
     }
 
     /**

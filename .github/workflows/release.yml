@@ -1,0 +1,61 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write
+
+jobs:
+  build-zip:
+    name: Build & attach distribution zip
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: shivammathur/setup-php@v2
+        with:
+          php-version: '8.2'
+          tools: composer:v2
+          coverage: none
+
+      - name: Install production deps only
+        run: composer install --no-dev --prefer-dist --no-progress --no-interaction --optimize-autoloader || true
+
+      - name: Compile fr_FR.mo
+        run: |
+          sudo apt-get update && sudo apt-get install -y gettext
+          msgfmt languages/mxchat-duckdb-fr_FR.po -o languages/mxchat-duckdb-fr_FR.mo
+
+      - name: Determine version
+        id: version
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      - name: Stage release tree
+        run: |
+          mkdir -p build/mxchat-duckdb
+          rsync -a \
+            --exclude='.git/' \
+            --exclude='.github/' \
+            --exclude='.gitignore' \
+            --exclude='build/' \
+            --exclude='tests/' \
+            --exclude='phpunit.xml*' \
+            --exclude='phpstan.neon*' \
+            --exclude='phpstan-baseline.neon' \
+            --exclude='.phpunit.result.cache' \
+            --exclude='composer.lock' \
+            --exclude='CONTRIBUTING.md' \
+            ./ build/mxchat-duckdb/
+
+      - name: Create zip
+        working-directory: build
+        run: zip -r "../mxchat-duckdb-${{ steps.version.outputs.version }}.zip" mxchat-duckdb
+
+      - name: Attach zip to the release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: mxchat-duckdb-${{ steps.version.outputs.version }}.zip

@@ -3,7 +3,7 @@
  * Plugin Name: MxChat DuckDB / MotherDuck
  * Plugin URI: https://github.com/paulargoud/mxchat-duckdb
  * Description: Adds DuckDB (embedded) and MotherDuck (cloud) as alternative vector stores for MxChat, replacing Pinecone with an open-source, SQL-native option.
- * Version: 0.3.0
+ * Version: 0.4.0
  * Author: Paul Argoud
  * License: GPLv2 or later
  * Text Domain: mxchat-duckdb
@@ -23,7 +23,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-define('MXCHAT_DUCKDB_VERSION', '0.3.0');
+define('MXCHAT_DUCKDB_VERSION', '0.4.0');
 define('MXCHAT_DUCKDB_FILE', __FILE__);
 define('MXCHAT_DUCKDB_DIR', plugin_dir_path(__FILE__));
 define('MXCHAT_DUCKDB_URL', plugin_dir_url(__FILE__));
@@ -36,11 +36,14 @@ if (file_exists(MXCHAT_DUCKDB_DIR . 'vendor/autoload.php')) {
 } else {
     require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-options.php';
     require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-metrics.php';
+    require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-quantization.php';
     require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-connection.php';
     require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-motherduck-connection.php';
     require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-embedded-connection.php';
     require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-vector-store.php';
     require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-sync.php';
+    require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-async-reprocess.php';
+    require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-pinecone-migrator.php';
     require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-compactor.php';
     require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-pinecone-proxy.php';
     require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-search-adapter.php';
@@ -88,6 +91,9 @@ class MxChat_DuckDB_Plugin {
 
         // Sync: incremental hooks on KB ingestion/deletion.
         MxChat_DuckDB_Sync::instance()->register_hooks();
+
+        // Async reprocess: Action Scheduler worker hook.
+        MxChat_DuckDB_Async_Reprocess::instance()->register_hooks();
 
         // Compactor: daily orphan-vector pruning.
         MxChat_DuckDB_Compactor::instance()->register_hooks();

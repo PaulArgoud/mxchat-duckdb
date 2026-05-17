@@ -25,6 +25,7 @@ class MxChat_DuckDB_Options {
             'distance_metric'     => 'cosine',
             'hnsw_enabled'        => true,
             'top_k'               => 50,
+            'embedding_storage'   => 'float32',            // 'float32' | 'int8' (experimental)
             'hybrid_enabled'      => false,                // enable BM25 + vector hybrid scoring
             'hybrid_alpha'        => 0.7,                  // weight on vector score (1.0 = pure vector)
             'query_cache_enabled' => true,                 // cache top-K results per (embedding, filter)
@@ -122,6 +123,32 @@ class MxChat_DuckDB_Options {
         $out['distance_metric']     = in_array($input['distance_metric'] ?? '', ['cosine', 'l2sq', 'ip'], true) ? $input['distance_metric'] : 'cosine';
         $out['hnsw_enabled']        = !empty($input['hnsw_enabled']);
         $out['top_k']               = max(1, min(1000, (int) ($input['top_k'] ?? 50)));
+        $out['embedding_storage']   = in_array($input['embedding_storage'] ?? '', ['float32', 'int8'], true)
+            ? $input['embedding_storage']
+            : 'float32';
+        // Same guard as embedding_dim: changing storage layout silently corrupts
+        // existing vectors. Block when the table already has rows.
+        if ($out['embedding_storage'] !== ($current['embedding_storage'] ?? 'float32') && $current['enabled']) {
+            try {
+                $store_check = new MxChat_DuckDB_Vector_Store();
+                $info = $store_check->table_info();
+                if ($info && $info['count'] > 0) {
+                    add_settings_error(
+                        MXCHAT_DUCKDB_OPTION_KEY,
+                        'storage_change_blocked',
+                        sprintf(
+                            /* translators: %d = row count */
+                            __('Cannot change embedding storage: the table already contains %d vectors. Export, wipe, and re-import to switch storage layout.', 'mxchat-duckdb'),
+                            (int) $info['count']
+                        ),
+                        'error'
+                    );
+                    $out['embedding_storage'] = $current['embedding_storage'] ?? 'float32';
+                }
+            } catch (\Throwable $e) {
+                // Brand-new install, no table yet — accept the change.
+            }
+        }
         $out['hybrid_enabled']      = !empty($input['hybrid_enabled']);
         $alpha                       = (float) ($input['hybrid_alpha'] ?? 0.7);
         $out['hybrid_alpha']        = max(0.0, min(1.0, $alpha));

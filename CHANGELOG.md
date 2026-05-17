@@ -10,9 +10,75 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Planned
 
 - Submit upstream patch (`mxchat_pinecone_matches_override` filter) to mxchat-basic.
-- Import-from-Pinecone tool (one-shot vector copy that bypasses re-embedding).
 - PDF / attachment reprocessing.
 - Per-bot configuration UI for multi-bot installs.
+- Built-in cross-encoder reranker (Cohere Rerank / BGE-reranker).
+
+---
+
+## [0.4.0] — 2026-05-17
+
+Ops & retrieval-quality pass. Public OSS-grade hygiene.
+
+### Added
+
+- **GitHub Actions CI** (`.github/workflows/ci.yml`) — `php -l` matrix across
+  PHP 8.0/8.1/8.2/8.3, `msgfmt` catalog check, PHPStan informational job,
+  PHPUnit on PHP 8.1/8.2/8.3.
+- **Release ZIP workflow** (`.github/workflows/release.yml`) — automatic
+  clean distribution zip attached to every `v*` tag, with dev files excluded.
+- **`readme.txt`** in the WordPress.org plugin-directory format (description,
+  installation, FAQ, screenshots, changelog, upgrade notice). Ready for
+  submission to wordpress.org.
+- **PHPStan config** at level 6 with a small WP stub bootstrap. Runs in CI
+  as `continue-on-error` for now — we publish results but don't fail PRs
+  until a WordPress stub package is added.
+- **PHPUnit smoke tests** — 35+ assertions across `Vector_Store` helpers
+  (filter compilation, score normalisation, dedup, cache key), the
+  `Embedded_Connection` idempotency sniff, the `Metrics` class, and the
+  `Quantization` round-trip. Tests run on PHP 8.1/8.2/8.3 in CI.
+- **Async reprocess via Action Scheduler** — `MxChat_DuckDB_Async_Reprocess`
+  enqueues one job per post in Action Scheduler (bundled with WooCommerce
+  and many WP plugins). Survives PHP `max_execution_time` on multi-thousand-
+  post catalogs; reports progress via a single non-autoloaded state option.
+  Falls back to the existing AJAX-batched path when Action Scheduler isn't
+  installed. New CLI command: `wp mxchat-duckdb async-reprocess`.
+- **Pinecone → DuckDB migration tool** — `MxChat_DuckDB_Pinecone_Migrator`
+  pulls every vector + metadata directly from a Pinecone index via
+  `/vectors/list` + `/vectors/fetch` and writes them into DuckDB. No
+  re-embedding; pure vector copy. Resumable via a persisted pagination
+  token. CLI: `wp mxchat-duckdb migrate-from-pinecone --api-key=… --host=… [--namespace=…]`.
+- **Parquet export / import** — `Vector_Store::export_parquet()` and
+  `import_parquet()` use DuckDB's native `COPY ... TO|FROM '...parquet'`.
+  Critical for moving between embedded ⇄ MotherDuck without re-embedding,
+  for backups, and for sharing KBs. CLI: `wp mxchat-duckdb export --path=…`
+  and `wp mxchat-duckdb import --path=…`.
+- **INT8 quantization (experimental)** — `embedding_storage` option toggles
+  the embedding column type between `FLOAT[N]` (default) and `TINYINT[N]`.
+  Cuts vector storage 4×. For unit-normalised embeddings (OpenAI ada-002,
+  text-embedding-3-*, Voyage, BGE) the recall loss is < 1 %.
+  Score expression uses `list_transform` to dequantise at query time. The
+  storage layout is locked once the table contains rows; switch by exporting
+  to Parquet, wiping, flipping the option, re-importing.
+- **`Vector_Store::storage_estimate()`** — surfaces vector count + bytes
+  estimate so admins can spot when INT8 would meaningfully help.
+- **Packagist-ready `composer.json`** — homepage, support URLs, keywords,
+  dev-dep declarations for PHPUnit + PHPStan. Submission to packagist.org
+  is a one-time manual OAuth step on the user's side.
+
+### New filters / hooks
+
+- No new public filters in v0.4.0 — existing extension points cover the new
+  features. The async path uses the existing `mxchat_duckdb_post_content`
+  and `mxchat_duckdb_sync_bot_id` filters.
+
+### Notes
+
+- Submitting to **wordpress.org/plugins** is a manual review process (~2–4
+  weeks). The `readme.txt` is now compliant; you still need to add at least
+  one screenshot (the settings page) and submit through the review queue.
+- Submitting to **packagist.org** requires a one-time OAuth grant on their
+  site. `composer require paulargoud/mxchat-duckdb` will work after that.
 
 ---
 

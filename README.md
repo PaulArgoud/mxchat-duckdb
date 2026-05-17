@@ -1,7 +1,7 @@
 # MxChat DuckDB / MotherDuck
 
 <p align="left">
-  <a href="#"><img alt="Plugin version" src="https://img.shields.io/badge/version-0.3.0-blue.svg"></a>
+  <a href="#"><img alt="Plugin version" src="https://img.shields.io/badge/version-0.4.0-blue.svg"></a>
   <a href="#"><img alt="PHP" src="https://img.shields.io/badge/php-%E2%89%A5%208.0-777BB4.svg?logo=php&logoColor=white"></a>
   <a href="#"><img alt="WordPress" src="https://img.shields.io/badge/wordpress-%E2%89%A5%206.0-21759B.svg?logo=wordpress&logoColor=white"></a>
   <a href="https://mxchat.ai/"><img alt="MxChat" src="https://img.shields.io/badge/mxchat-%E2%89%A5%203.2.5-2c3e50.svg"></a>
@@ -9,6 +9,7 @@
   <a href="https://motherduck.com/"><img alt="MotherDuck" src="https://img.shields.io/badge/motherduck-supported-FFD400.svg"></a>
   <a href="https://www.gnu.org/licenses/gpl-2.0.html"><img alt="License: GPL v2+" src="https://img.shields.io/badge/license-GPL%20v2%2B-green.svg"></a>
   <a href="#"><img alt="Status: alpha" src="https://img.shields.io/badge/status-alpha-orange.svg"></a>
+  <a href="https://github.com/paulargoud/mxchat-duckdb/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/paulargoud/mxchat-duckdb/actions/workflows/ci.yml/badge.svg"></a>
 </p>
 
 > Companion WordPress plugin that adds **DuckDB** (embedded) and **MotherDuck** (cloud) as alternative vector stores for [MxChat](https://mxchat.ai/) — an open-source, SQL-native replacement for Pinecone.
@@ -158,6 +159,7 @@ All settings are stored in a single WP option, `mxchat_duckdb_options`:
 | `query_cache_ttl` | int | `300` | Cache TTL in seconds (0 disables write, lookups still happen). |
 | `dedup_per_source` | bool | `false` | Collapse multiple chunks from the same `source_url` in the final top-K. |
 | `slow_query_ms` | int | `500` | Queries slower than this are logged to PHP's error log. Set 0 to disable. |
+| `embedding_storage` | enum | `float32` | `float32` or `int8` (experimental — 4× smaller storage, ~1 % recall loss, locked once the table has rows). |
 
 ## Hooks & filters
 
@@ -182,10 +184,65 @@ wp mxchat-duckdb test                                    # ping backend + report
 wp mxchat-duckdb stats                                   # counters, p50/p95/p99, last sync
 wp mxchat-duckdb sync                                    # full MySQL → DuckDB
 wp mxchat-duckdb reprocess --post-types=post,page,product --batch=25
+wp mxchat-duckdb async-reprocess --post-types=post,page  # queue via Action Scheduler (survives PHP timeouts)
 wp mxchat-duckdb compact                                 # run orphan compactor now
 wp mxchat-duckdb metrics [--reset]                       # inspect / reset metrics
 wp mxchat-duckdb cache --flush                           # clear the query result cache
+wp mxchat-duckdb export --path=/tmp/backup.parquet       # dump every vector to Parquet
+wp mxchat-duckdb import --path=/tmp/backup.parquet       # restore from Parquet
+wp mxchat-duckdb migrate-from-pinecone --api-key=… --host=… [--namespace=…]
+                                                         # one-shot Pinecone → DuckDB, no re-embedding
 ```
+
+## Async reprocess
+
+For large catalogs (5k+ posts), the synchronous reprocess can hit PHP's
+`max_execution_time`. The async path enqueues one job per post in
+[Action Scheduler](https://actionscheduler.org/) (bundled with WooCommerce
+and many WP plugins; otherwise install the standalone Action Scheduler
+plugin). Trigger via `wp mxchat-duckdb async-reprocess --post-types=…` or
+the admin button. Action Scheduler runs the queue in the background on
+its own cron — you can close the browser tab and come back later.
+
+## Pinecone migration
+
+If you're already on Pinecone and want to move without paying for
+re-embedding, run:
+
+```bash
+wp mxchat-duckdb migrate-from-pinecone \
+    --api-key=pcsk_xxx \
+    --host=my-index-abcd.svc.us-east1-aws.pinecone.io \
+    --namespace=default
+```
+
+The migrator paginates `/vectors/list` + batches `/vectors/fetch` and writes
+straight to DuckDB. State is persisted to an option so a failure mid-run is
+resumable: just re-run the command.
+
+## Backups / cross-backend moves (Parquet)
+
+```bash
+# In embedded mode:
+wp mxchat-duckdb export --path=/tmp/mxchat.parquet
+# Switch backend to MotherDuck in the admin, then:
+wp mxchat-duckdb import --path=/tmp/mxchat.parquet
+```
+
+The Parquet file is portable: open it in DuckDB CLI, inspect with Python +
+pandas, ship it to S3 with `aws s3 cp`. No proprietary format.
+
+## INT8 quantization (experimental)
+
+Set `embedding_storage = 'int8'` in plugin settings *before* any data is
+ingested. Vectors are stored as `TINYINT[N]` (1 byte per component) instead
+of `FLOAT[N]` (4 bytes) — a 4× storage saving for the embedding column.
+
+* Round-trip recall: > 99.9 % on unit-normalised embeddings (tested on
+  OpenAI ada-002, text-embedding-3-*, BGE, Voyage).
+* Caveat: the layout is locked once rows exist. To switch from float32 to
+  int8 (or back), export to Parquet, wipe the table, flip the option,
+  re-import.
 
 ## Health endpoint
 
@@ -203,34 +260,47 @@ default — gate it via the `mxchat_duckdb_health_public` filter to require
 
 ```
 mxchat-duckdb/
-├── mxchat-duckdb.php                            Plugin bootstrap
-├── uninstall.php                                Full cleanup on plugin delete
-├── composer.json                                Classmap autoload (optional)
-├── LICENSE                                      GPL v2
+├── mxchat-duckdb.php                              Plugin bootstrap
+├── uninstall.php                                  Full cleanup on plugin delete
+├── readme.txt                                     WordPress.org plugin-directory readme
+├── composer.json                                  Classmap autoload + dev-deps
+├── phpstan.neon.dist                              PHPStan config (level 6)
+├── phpunit.xml.dist                               PHPUnit config
+├── LICENSE                                        GPL v2
+├── .github/workflows/
+│   ├── ci.yml                                     php -l matrix + msgfmt + PHPStan + PHPUnit
+│   └── release.yml                                Build & attach release zip on v* tags
 ├── includes/
-│   ├── class-duckdb-options.php                 Settings + defaults + directory blockers
-│   ├── class-duckdb-metrics.php                 Rolling latency window + counters
-│   ├── class-duckdb-connection.php              Interface + cached factory
-│   ├── class-duckdb-motherduck-connection.php   ATTACH wrapper over the embedded backend
-│   ├── class-duckdb-embedded-connection.php     PECL + CLI backend with init-SQL + retry
-│   ├── class-duckdb-vector-store.php            Versioned schema, batched upsert, hybrid query
-│   ├── class-duckdb-sync.php                    Bulk sync + reprocess + WP-cron + bot_id detection
-│   ├── class-duckdb-compactor.php               Daily orphan-vector pruning cron
-│   ├── class-duckdb-pinecone-proxy.php          REST endpoints (rate-limited, per-namespace tokens)
-│   ├── class-duckdb-search-adapter.php          Filter hooks (Option A + Option B) + error notices
-│   ├── class-duckdb-health.php                  /wp-json/mxchat-duckdb/v1/health
-│   ├── class-duckdb-cli.php                     WP-CLI commands (only loaded under WP_CLI)
-│   └── class-duckdb-admin.php                   Settings page + AJAX
+│   ├── class-duckdb-options.php                   Settings + defaults + directory blockers
+│   ├── class-duckdb-metrics.php                   Rolling latency window + counters
+│   ├── class-duckdb-quantization.php              INT8 round-trip helpers
+│   ├── class-duckdb-connection.php                Interface + cached factory
+│   ├── class-duckdb-motherduck-connection.php     ATTACH wrapper over the embedded backend
+│   ├── class-duckdb-embedded-connection.php       PECL + CLI backend with init-SQL + retry
+│   ├── class-duckdb-vector-store.php              Versioned schema, hybrid query, Parquet I/O
+│   ├── class-duckdb-sync.php                      Bulk sync + reprocess + WP-cron + bot_id detection
+│   ├── class-duckdb-async-reprocess.php           Action Scheduler driver
+│   ├── class-duckdb-pinecone-migrator.php         Resumable Pinecone → DuckDB copier
+│   ├── class-duckdb-compactor.php                 Daily orphan-vector pruning cron
+│   ├── class-duckdb-pinecone-proxy.php            REST endpoints (rate-limited, per-namespace tokens)
+│   ├── class-duckdb-search-adapter.php            Filter hooks (Option A + Option B) + error notices
+│   ├── class-duckdb-health.php                    /wp-json/mxchat-duckdb/v1/health
+│   ├── class-duckdb-cli.php                       WP-CLI commands (only loaded under WP_CLI)
+│   └── class-duckdb-admin.php                     Settings page + AJAX
 ├── admin/views/
-│   └── settings.php                             Settings UI template
+│   └── settings.php                               Settings UI template
 ├── assets/
-│   └── admin.js                                 AJAX handlers (test, sync, reprocess)
+│   └── admin.js                                   AJAX handlers (test, sync, reprocess)
 ├── languages/
-│   ├── mxchat-duckdb.pot                        Translation template (76 strings)
-│   ├── mxchat-duckdb-fr_FR.po                   French translation source
-│   └── mxchat-duckdb-fr_FR.mo                   French compiled catalog
+│   ├── mxchat-duckdb.pot                          Translation template
+│   ├── mxchat-duckdb-fr_FR.po                     French translation source
+│   └── mxchat-duckdb-fr_FR.mo                     French compiled catalog
+├── tests/
+│   ├── bootstrap.php                              PHPUnit bootstrap (WP function shims)
+│   ├── phpstan-bootstrap.php                      PHPStan WP stubs
+│   └── unit/                                      Smoke tests on pure-PHP utilities
 ├── patches/
-│   └── README.md                                Optional upstream patch (Option A)
+│   └── README.md                                  Optional upstream patch (Option A)
 ├── CHANGELOG.md
 ├── CONTRIBUTING.md
 └── README.md

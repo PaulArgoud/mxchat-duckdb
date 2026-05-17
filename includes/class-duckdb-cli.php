@@ -9,6 +9,12 @@
  *   wp mxchat-duckdb compact            # run the orphan compactor now
  *   wp mxchat-duckdb metrics --reset    # reset metrics counters
  *   wp mxchat-duckdb cache --flush      # flush the query result cache
+ *   wp mxchat-duckdb export --path=…    # Parquet dump of every vector
+ *   wp mxchat-duckdb import --path=…    # Parquet restore (INSERT OR REPLACE)
+ *   wp mxchat-duckdb async-reprocess --post-types=post,page
+ *                                       # enqueue every post into Action Scheduler
+ *   wp mxchat-duckdb migrate-from-pinecone --api-key=… --host=… [--namespace=…]
+ *                                       # one-shot vector copy, no re-embedding
  */
 
 if (!defined('ABSPATH')) {
@@ -209,6 +215,117 @@ class MxChat_DuckDB_CLI {
             "DELETE FROM {$wpdb->options} WHERE option_name LIKE '\\_transient\\_timeout\\_mxd\\_q\\_%' ESCAPE '\\\\'"
         );
         \WP_CLI::success(sprintf('Flushed %d cached query results.', $rows));
+    }
+
+    /**
+     * Export every vector to a Parquet file.
+     *
+     * ## OPTIONS
+     * --path=<path>
+     * : Output file path. Must be writable by the PHP process (or by MotherDuck
+     *   when in cloud mode — see DuckDB COPY TO docs for remote URIs).
+     *
+     * ## EXAMPLES
+     *     wp mxchat-duckdb export --path=/tmp/mxchat-backup.parquet
+     */
+    public function export($args, $assoc_args) {
+        $path = (string) ($assoc_args['path'] ?? '');
+        if ($path === '') \WP_CLI::error('Missing --path=<file>.');
+        try {
+            $store = new MxChat_DuckDB_Vector_Store();
+            $count = $store->export_parquet($path);
+            \WP_CLI::success(sprintf('Exported %d vectors to %s.', $count, $path));
+        } catch (\Throwable $e) {
+            \WP_CLI::error($e->getMessage());
+        }
+    }
+
+    /**
+     * Import vectors from a Parquet file produced by `export`.
+     *
+     * ## OPTIONS
+     * --path=<path>
+     * : Input file path.
+     *
+     * ## EXAMPLES
+     *     wp mxchat-duckdb import --path=/tmp/mxchat-backup.parquet
+     */
+    public function import($args, $assoc_args) {
+        $path = (string) ($assoc_args['path'] ?? '');
+        if ($path === '') \WP_CLI::error('Missing --path=<file>.');
+        try {
+            $store = new MxChat_DuckDB_Vector_Store();
+            $count = $store->import_parquet($path);
+            \WP_CLI::success(sprintf('Imported %d vectors from %s.', $count, $path));
+        } catch (\Throwable $e) {
+            \WP_CLI::error($e->getMessage());
+        }
+    }
+
+    /**
+     * Enqueue every published post of the given types into Action Scheduler
+     * for asynchronous reprocessing. Survives PHP timeouts on large catalogs.
+     *
+     * ## OPTIONS
+     * [--post-types=<csv>]
+     * : Default: post,page
+     *
+     * [--bot-id=<id>]
+     * : Default: default
+     *
+     * ## EXAMPLES
+     *     wp mxchat-duckdb async-reprocess --post-types=post,page,product
+     */
+    public function async_reprocess($args, $assoc_args) {
+        $post_types_raw = (string) ($assoc_args['post-types'] ?? 'post,page');
+        $post_types = array_filter(array_map('sanitize_key', array_map('trim', explode(',', $post_types_raw))));
+        if (empty($post_types)) $post_types = ['post', 'page'];
+        $bot_id = (string) ($assoc_args['bot-id'] ?? 'default');
+
+        try {
+            $r = MxChat_DuckDB_Async_Reprocess::instance()->enqueue_batch($post_types, $bot_id);
+            \WP_CLI::success(sprintf(
+                'Queued %d of %d posts. Action Scheduler will process them in the background. Run `wp action-scheduler run --group=mxchat-duckdb` to drain inline.',
+                $r['scheduled'], $r['total']
+            ));
+        } catch (\Throwable $e) {
+            \WP_CLI::error($e->getMessage());
+        }
+    }
+
+    /**
+     * Migrate vectors from a Pinecone index into DuckDB. No re-embedding —
+     * pulls existing vectors + metadata directly.
+     *
+     * ## OPTIONS
+     * --api-key=<key>
+     * --host=<host>
+     * : The Pinecone index host (e.g. my-index-abcd.svc.us-east1-aws.pinecone.io).
+     *
+     * [--namespace=<ns>]
+     *
+     * ## EXAMPLES
+     *     wp mxchat-duckdb migrate-from-pinecone \
+     *         --api-key=pcsk_... \
+     *         --host=my-index-abcd.svc.us-east1-aws.pinecone.io \
+     *         --namespace=default
+     */
+    public function migrate_from_pinecone($args, $assoc_args) {
+        $api_key = (string) ($assoc_args['api-key'] ?? '');
+        $host    = (string) ($assoc_args['host'] ?? '');
+        $ns      = (string) ($assoc_args['namespace'] ?? '');
+        if ($api_key === '' || $host === '') {
+            \WP_CLI::error('Both --api-key=<key> and --host=<host> are required.');
+        }
+        try {
+            $migrator = new MxChat_DuckDB_Pinecone_Migrator($api_key, $host, $ns);
+            $r = $migrator->run(function ($copied) {
+                \WP_CLI::log(sprintf('… copied %d so far', $copied));
+            });
+            \WP_CLI::success(sprintf('Migration complete: %d copied, %d failed.', $r['copied'], $r['failed']));
+        } catch (\Throwable $e) {
+            \WP_CLI::error($e->getMessage());
+        }
     }
 }
 

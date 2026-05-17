@@ -17,6 +17,7 @@ composer.lock
 
 # WP-CLI cache, local build artifacts
 .phpunit.result.cache
+.phpunit.cache/
 /build/
 /dist/
 
