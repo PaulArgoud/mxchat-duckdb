@@ -20,7 +20,16 @@ if (!function_exists('esc_html__')) {
     function esc_html__($text, $domain = 'default') { return $text; }
 }
 if (!function_exists('apply_filters')) {
-    function apply_filters($hook, $value, ...$args) { return $value; }
+    // Pass-through by default; tests can register a static override by
+    // setting $GLOBALS['__test_filter_overrides'][$hook] = $value. Useful
+    // for forcing specific filter return values (e.g. capping rate-limits
+    // or max-deletes) without monkey-patching individual call sites.
+    function apply_filters($hook, $value, ...$args) {
+        if (isset($GLOBALS['__test_filter_overrides'][$hook])) {
+            return $GLOBALS['__test_filter_overrides'][$hook];
+        }
+        return $value;
+    }
 }
 if (!function_exists('wp_json_encode')) {
     function wp_json_encode($data, $options = 0, $depth = 512) {
@@ -134,6 +143,94 @@ if (!function_exists('current_user_can')) {
     }
 }
 
+// Nonce shim — tests set $GLOBALS['__test_valid_nonces'] = ['nonce_value' => 'action_name'].
+if (!function_exists('wp_verify_nonce')) {
+    function wp_verify_nonce($nonce, $action) {
+        $valid = $GLOBALS['__test_valid_nonces'] ?? [];
+        return isset($valid[$nonce]) && $valid[$nonce] === $action;
+    }
+}
+if (!function_exists('wp_create_nonce')) {
+    function wp_create_nonce($action) {
+        $n = 'nonce_' . md5($action);
+        $GLOBALS['__test_valid_nonces'][$n] = $action;
+        return $n;
+    }
+}
+
+// Minimal $wpdb mock — records every SQL call and returns canned responses
+// matched on substring patterns. Sufficient for the call surfaces our
+// classes actually touch (get_var, get_results, get_col, query, prepare).
+if (!class_exists('MxChat_Test_WPDB')) {
+    class MxChat_Test_WPDB {
+        public string $prefix  = 'wp_';
+        public string $options = 'wp_options';
+        /** @var string[] */
+        public array $log = [];
+        /** @var array<string, mixed> */
+        public array $responses = [];
+
+        public function set_response(string $sql_pattern, $value): void {
+            $this->responses[$sql_pattern] = $value;
+        }
+
+        const NOT_FOUND = '__mxd_test_wpdb_not_found__';
+
+        private function findResponse(string $sql) {
+            foreach ($this->responses as $pattern => $value) {
+                if (stripos($sql, $pattern) !== false) {
+                    // Callable response = generator (e.g. paginate by call count).
+                    return is_callable($value) ? $value($sql) : $value;
+                }
+            }
+            return self::NOT_FOUND;
+        }
+
+        public function query(string $sql) {
+            $this->log[] = $sql;
+            $r = $this->findResponse($sql);
+            return $r === self::NOT_FOUND ? 0 : ($r ?? 0);
+        }
+
+        public function get_var(string $sql) {
+            $this->log[] = $sql;
+            $r = $this->findResponse($sql);
+            return $r === self::NOT_FOUND ? null : $r;
+        }
+
+        public function get_results(string $sql, $output = null) {
+            $this->log[] = $sql;
+            $r = $this->findResponse($sql);
+            // No matching response → empty array (default WP behaviour for
+            // "no rows"). Explicit null in the registry → null (the
+            // "unreadable table" signal real $wpdb uses on errors).
+            if ($r === self::NOT_FOUND) return [];
+            return $r;
+        }
+
+        public function get_col(string $sql, $col_offset = 0) {
+            $this->log[] = $sql;
+            $r = $this->findResponse($sql);
+            if ($r === self::NOT_FOUND) return [];
+            return is_array($r) ? $r : [];
+        }
+
+        /** Minimal sprintf-shaped prepare — covers %s, %d, %f, %i. */
+        public function prepare(string $sql, ...$args) {
+            if (count($args) === 1 && is_array($args[0])) {
+                $args = $args[0];
+            }
+            $i = 0;
+            return preg_replace_callback('/%[sdfiF]/', function ($m) use (&$i, $args) {
+                $v = $args[$i++] ?? null;
+                if (is_int($v) || is_float($v)) return (string) $v;
+                if (is_null($v))                return 'NULL';
+                return "'" . str_replace("'", "''", (string) $v) . "'";
+            }, $sql);
+        }
+    }
+}
+
 // Minimal WP_REST_Request stub — covers the surface that Pinecone_Proxy::check_token
 // and the handlers actually exercise.
 if (!class_exists('WP_REST_Request')) {
@@ -207,6 +304,7 @@ require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-sync.php';
 require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-search-adapter.php';
 require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-pinecone-proxy.php';
 require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-pinecone-migrator.php';
+require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-compactor.php';
 
 // Stub the Plugin class so Vector_Store::upsert()/delete_*() can call
 // MxChat_DuckDB_Plugin::flush_query_cache() without booting the full plugin.
