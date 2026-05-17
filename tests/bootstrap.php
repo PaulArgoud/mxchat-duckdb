@@ -361,6 +361,64 @@ if (!function_exists('check_ajax_referer')) {
     }
 }
 
+// ───── WP-CLI shims ─────────────────────────────────────────────────────
+//
+// The CLI command class declares conditionally (`if (!defined('WP_CLI') || !WP_CLI) return;`)
+// and registers itself at file-load via `\WP_CLI::add_command(...)`. Tests
+// flip WP_CLI=true and install a minimal stub before require_once so the
+// class definition is reachable.
+
+if (!defined('WP_CLI')) define('WP_CLI', true);
+
+if (!class_exists('MxChat_Test_CliExit')) {
+    // WP_CLI::error() die()s in production; we throw this so tests can
+    // assert that a command path terminated via ::error.
+    class MxChat_Test_CliExit extends Exception {}
+}
+
+if (!class_exists('WP_CLI')) {
+    class WP_CLI {
+        public static array $log_buf      = [];
+        public static array $success_buf  = [];
+        public static array $error_buf    = [];
+        public static array $warning_buf  = [];
+        public static array $commands     = [];
+
+        public static function reset(): void {
+            self::$log_buf = self::$success_buf = self::$error_buf = self::$warning_buf = [];
+        }
+        public static function log($msg)     { self::$log_buf[] = (string) $msg; }
+        public static function success($msg) { self::$success_buf[] = (string) $msg; }
+        public static function warning($msg) { self::$warning_buf[] = (string) $msg; }
+        public static function error($msg)   {
+            self::$error_buf[] = (string) $msg;
+            throw new MxChat_Test_CliExit((string) $msg);
+        }
+        public static function add_command($name, $class) {
+            self::$commands[$name] = $class;
+        }
+    }
+}
+
+// \WP_CLI\Utils namespace — format_items + make_progress_bar.
+if (!class_exists('WP_CLI\\Utils\\TestProgressBar')) {
+    eval('namespace WP_CLI\\Utils;
+    class TestProgressBar {
+        public int $total;
+        public int $ticked = 0;
+        public bool $finished = false;
+        public function __construct(int $total) { $this->total = $total; }
+        public function tick(int $delta = 1) { $this->ticked += $delta; }
+        public function finish() { $this->finished = true; }
+    }
+    function make_progress_bar(string $label, int $count) {
+        return new TestProgressBar($count);
+    }
+    function format_items(string $format, array $items, $fields = null) {
+        $GLOBALS["__test_cli_format_items"] = compact("format", "items", "fields");
+    }');
+}
+
 // Nonce shim — tests set $GLOBALS['__test_valid_nonces'] = ['nonce_value' => 'action_name'].
 if (!function_exists('wp_verify_nonce')) {
     function wp_verify_nonce($nonce, $action) {
@@ -527,6 +585,7 @@ require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-compactor.php';
 require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-health.php';
 require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-async-reprocess.php';
 require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-admin.php';
+require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-cli.php';
 
 // Stub the Plugin class so Vector_Store::upsert()/delete_*() can call
 // MxChat_DuckDB_Plugin::flush_query_cache() without booting the full plugin.
