@@ -40,7 +40,14 @@ if (file_exists(MXCHAT_DUCKDB_DIR . 'vendor/autoload.php')) {
     require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-connection.php';
     require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-motherduck-connection.php';
     require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-embedded-connection.php';
+    // Vector store: shared trait + schema/query split + orchestrator facade.
+    require_once MXCHAT_DUCKDB_DIR . 'includes/trait-duckdb-sql-helpers.php';
+    require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-vector-store-schema.php';
+    require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-vector-store-query.php';
     require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-vector-store.php';
+    // Ingestion pipelines: MySQL sync + WP post reprocessor + sync facade.
+    require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-mysql-sync.php';
+    require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-post-reprocessor.php';
     require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-sync.php';
     require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-async-reprocess.php';
     require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-pinecone-migrator.php';

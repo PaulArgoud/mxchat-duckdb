@@ -9,9 +9,13 @@ use PHPUnit\Framework\TestCase;
  */
 final class VectorStoreHelpersTest extends TestCase {
 
-    /** Invoke a static reflection-bound method. */
+    /**
+     * The helpers tested below moved from MxChat_DuckDB_Vector_Store to
+     * MxChat_DuckDB_Vector_Store_Query in the post-v0.4 refactor — they
+     * stay private static there so reflection is still the right escape hatch.
+     */
     private static function call(string $method, array $args = []) {
-        $r = new ReflectionMethod(MxChat_DuckDB_Vector_Store::class, $method);
+        $r = new ReflectionMethod(MxChat_DuckDB_Vector_Store_Query::class, $method);
         $r->setAccessible(true);
         return $r->invokeArgs(null, $args);
     }

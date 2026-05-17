@@ -1,0 +1,37 @@
+<?php
+/**
+ * @var array $opts Plugin options (provided by the parent settings.php).
+ */
+if (!defined('ABSPATH')) { exit; }
+?>
+<h2><?php esc_html_e('Activation', 'mxchat-duckdb'); ?></h2>
+<table class="form-table" role="presentation">
+    <tr>
+        <th scope="row"><?php esc_html_e('Enable DuckDB / MotherDuck', 'mxchat-duckdb'); ?></th>
+        <td>
+            <label>
+                <input type="checkbox" name="<?php echo esc_attr(MXCHAT_DUCKDB_OPTION_KEY); ?>[enabled]" value="1" <?php checked(!empty($opts['enabled'])); ?>>
+                <?php esc_html_e('Enabled', 'mxchat-duckdb'); ?>
+            </label>
+            <p class="description">
+                <?php esc_html_e(
+                    'When enabled, MxChat uses this plugin as its vector store (in place of Pinecone). When disabled, MxChat falls back to its default behaviour.',
+                    'mxchat-duckdb'
+                ); ?>
+            </p>
+        </td>
+    </tr>
+    <tr>
+        <th scope="row"><?php esc_html_e('Backend', 'mxchat-duckdb'); ?></th>
+        <td>
+            <label style="margin-right:1em;">
+                <input type="radio" name="<?php echo esc_attr(MXCHAT_DUCKDB_OPTION_KEY); ?>[mode]" value="motherduck" <?php checked($opts['mode'] ?? '', 'motherduck'); ?>>
+                <?php esc_html_e('MotherDuck (cloud, via ATTACH)', 'mxchat-duckdb'); ?>
+            </label>
+            <label>
+                <input type="radio" name="<?php echo esc_attr(MXCHAT_DUCKDB_OPTION_KEY); ?>[mode]" value="embedded" <?php checked($opts['mode'] ?? '', 'embedded'); ?>>
+                <?php esc_html_e('DuckDB embedded (local file)', 'mxchat-duckdb'); ?>
+            </label>
+        </td>
+    </tr>
+</table>

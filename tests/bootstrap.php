@@ -89,9 +89,15 @@ define('MXCHAT_DUCKDB_OPTION_KEY', 'mxchat_duckdb_options');
 
 require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-options.php';
 require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-metrics.php';
+require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-quantization.php';
 require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-connection.php';
 require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-embedded-connection.php';
+require_once MXCHAT_DUCKDB_DIR . 'includes/trait-duckdb-sql-helpers.php';
+require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-vector-store-schema.php';
+require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-vector-store-query.php';
 require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-vector-store.php';
+require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-mysql-sync.php';
+require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-post-reprocessor.php';
 require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-sync.php';
 
 // Stub the Plugin class so Vector_Store::upsert()/delete_*() can call

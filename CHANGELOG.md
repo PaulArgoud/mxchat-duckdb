@@ -14,6 +14,61 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - Per-bot configuration UI for multi-bot installs.
 - Built-in cross-encoder reranker (Cohere Rerank / BGE-reranker).
 
+### Changed (internal refactor — no behaviour change)
+
+- **`Vector_Store` split (858 → 323 lines).** The 858-line monolith is now
+  three coordinated classes sharing a trait:
+  - `MxChat_DuckDB_Vector_Store_Schema` — migration runner + meta table +
+    `ensure_schema()` + `table_info()`. Owns the per-request memoisation
+    cache.
+  - `MxChat_DuckDB_Vector_Store_Query` — top-K read path: cache lookup,
+    vector + hybrid BM25 SQL, filter compiler, score normalisation, dedup,
+    rerank hook, slow-query log.
+  - `MxChat_DuckDB_Vector_Store` (façade) — keeps the public API stable
+    (constructor + `ensure_schema` / `query_pinecone_shape` /
+    `upsert` / `delete_*` / `count` / `list_ids` / `fetch_by_ids` /
+    `export_parquet` / `import_parquet` / `storage_estimate`), delegating
+    schema and query work to the two new classes.
+  - `MxChat_DuckDB_SQL_Helpers_Trait` — shared `quote_ident`,
+    `literal_string`, `literal_for`, `literal_int_or_float_array`,
+    `embedding_column_type`, `embedding_as_float_sql`. Lives in
+    `includes/trait-duckdb-sql-helpers.php`.
+
+  Public API and option layout are unchanged; call-sites (sync, REST proxy,
+  admin, CLI, async-reprocess, compactor, tests) all keep compiling without
+  modification. Tests targeting the moved private statics
+  (`compile_filter`, `normalize_scores`, `dedup_per_source`, `cache_key`)
+  now reflect against `Vector_Store_Query`.
+
+- **`Sync` split (453 → 76-line façade + 236 MySQL pipeline + 197 post
+  reprocessor).** The orthogonal pipelines that lived together are now
+  three classes:
+  - `MxChat_DuckDB_Mysql_Sync` — `full_sync`, `incremental_sync`,
+    `cascade_delete_handler`, `vector_id_for_row` (public static),
+    `detect_kb_columns`, `row_to_vector`.
+  - `MxChat_DuckDB_Post_Reprocessor` — `reprocess_posts`,
+    `reprocess_single_post`, `build_post_content`,
+    `map_post_type_to_content_type`, `resolve_embedding_api_key`.
+  - `MxChat_DuckDB_Sync` (façade) — keeps `instance()`, `register_hooks()`,
+    `full_sync`, `incremental_sync`, `reprocess_posts`,
+    `reprocess_single_post`, `cascade_delete_handler`, and the public
+    static `vector_id_for_row` for callers in the compactor and tests.
+
+- **`admin/views/settings.php` split (369 → 73-line shell + 7 partials).**
+  Each `<h2>` section moved to its own file under
+  `admin/views/partials/`:
+  - `section-activation.php`
+  - `section-motherduck.php`
+  - `section-embedded.php`
+  - `section-vector-schema.php`
+  - `section-retrieval-quality.php`
+  - `section-performance.php`
+  - `section-diagnostics.php`
+
+  The shell handles the page header, the last-error notice, the
+  PECL/CLI performance warning, then `include`s each partial in order.
+  Adding a new section is now one new file plus one new `include` line.
+
 ---
 
 ## [0.4.0] — 2026-05-17
