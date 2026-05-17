@@ -4,7 +4,7 @@ Tags: chatbot, ai, vector-search, duckdb, motherduck, pinecone, embeddings, rag,
 Requires at least: 6.0
 Tested up to: 6.7
 Requires PHP: 8.0
-Stable tag: 0.6.0
+Stable tag: 0.7.0
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -95,6 +95,17 @@ By default, no — your `.duckdb` file is preserved on uninstall because it may 
 
 == Changelog ==
 
+= 0.7.0 =
+* Project hygiene + test coverage pass. **No schema migration**, no behaviour change for production.
+* New: SECURITY.md, GitHub issue templates, `composer audit` CI job, PHP 8.4 in CI matrix, szepeviktor/phpstan-wordpress dev-dep.
+* CI: `actions/checkout` v4 → v6 (Node 24), PHPStan no longer continue-on-error (level 6 clean with WP stubs).
+* PHPStan: phpstan/phpstan ^1.11 → ^2.0 to support phpstan-wordpress ^2.0.
+* Fixed: uninstall.php was leaking three sidecar options (cache_gen, reprocess_state, pinecone_migration_state).
+* Fixed: `wp mxchat-duckdb cache --flush` migrated from legacy LIKE DELETE to O(1) generation-counter bump.
+* Fixed: `wp mxchat-duckdb sync` progress bar no longer jumps 0% → 100% at first batch.
+* Fixed: two hardcoded French strings in `assets/admin.js` routed through `mxchatDuckDB.i18n.*`; fr_FR.po updated.
+* Tests: 57 → 240 tests, 100 → 857 assertions, 5/20 → **20/20 classes covered**. Every class in includes/ now has at least one dedicated test file.
+
 = 0.6.0 =
 * New `mxchat_pre_vector_query` filter handler (WordPress-canonical `pre_*` short-circuit convention) ahead of the upstream PR. Legacy `mxchat_pinecone_matches_override` hook kept in parallel for installs already patched.
 * Query cache invalidation is now O(1) via a generation counter; the per-write `LIKE DELETE` over `wp_options` is gone. Orphans expire by TTL.
@@ -155,6 +166,9 @@ By default, no — your `.duckdb` file is preserved on uninstall because it may 
 * Initial release.
 
 == Upgrade Notice ==
+
+= 0.7.0 =
+Project hygiene + test coverage pass. No schema migration, no behaviour change for production traffic — pure improvement of correctness guarantees (57 → 240 tests, 5/20 → 20/20 classes covered). Safe drop-in upgrade.
 
 = 0.6.0 =
 Performance + hardening pass. No schema migration, no behaviour change for default settings — public API stable. The legacy `mxchat_pinecone_matches_override` hook stays registered so installs already running the upstream patch keep working unchanged. Safe drop-in upgrade.

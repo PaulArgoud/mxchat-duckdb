@@ -7,6 +7,56 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Planned
+
+- Submit upstream patch (`mxchat_pre_vector_query` filter, WP-canonical
+  `pre_*` convention) to mxchat-basic. The legacy
+  `mxchat_pinecone_matches_override` hook stays registered for installs
+  that applied the previous patch contract.
+- PDF / attachment reprocessing.
+- Per-bot configuration UI for multi-bot installs.
+- Built-in cross-encoder reranker (Cohere Rerank / BGE-reranker).
+
+---
+
+## [0.7.0] — 2026-05-17
+
+Project hygiene + test coverage pass. **No schema migration**, no
+behaviour change for production traffic; pure improvement of the
+project's correctness guarantees and contributor surface.
+
+### Added
+
+- **`SECURITY.md`** — vulnerability reporting policy (GitHub Security
+  Advisories preferred, `paul@argoud.net` as fallback), expected
+  response timeline, scope boundaries vs upstream (mxchat-basic /
+  DuckDB / WordPress core), supported-versions table, and the
+  hardening defaults that ship enabled.
+- **`.github/ISSUE_TEMPLATE/`** — modern form-schema templates for bug
+  reports and feature requests; `config.yml` disables blank issues and
+  routes vulnerability reports to a private Security Advisory instead
+  of a public issue.
+- **`composer audit` job in CI** — runs on production deps only (the
+  release zip ships `--no-dev`, so dev advisories don't reach end users).
+- **`szepeviktor/phpstan-wordpress`** + `phpstan/extension-installer`
+  added to `require-dev`. WordPress stubs auto-loaded; PHPStan level 6
+  is now clean with no per-call ignoreErrors needed.
+- **PHP 8.4** added to the lint + phpunit CI matrices.
+- **183 new unit tests** covering every previously-untested class in
+  `includes/` — see the Tests section below.
+
+### Changed
+
+- **CI hardening**:
+  - `actions/checkout` bumped v4 → v6 (Node.js 24, no more
+    "Node.js 20 actions deprecated" annotations).
+  - **PHPStan is no longer `continue-on-error`** — the previous run
+    after the szepeviktor/phpstan-wordpress bump confirmed level 6 is
+    silent, so PHPStan now blocks the build like the other jobs. Path
+    to level 7/8 still tracked in `phpstan.neon.dist`.
+- **`phpstan/phpstan` bumped from `^1.11` to `^2.0`** to support
+  `szepeviktor/phpstan-wordpress ^2.0` (which requires PHPStan 2.x).
+
 ### Fixed
 
 - **`uninstall.php` was leaking three sidecar options across reinstalls**:
@@ -29,15 +79,104 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `mxchatDuckDB.i18n.*` localisation surface. New `vectorsSuffix` i18n key
   added; `fr_FR.po` updated, `.mo` recompiled.
 
-### Planned
+### Tests
 
-- Submit upstream patch (`mxchat_pre_vector_query` filter, WP-canonical
-  `pre_*` convention) to mxchat-basic. The legacy
-  `mxchat_pinecone_matches_override` hook stays registered for installs
-  that applied the previous patch contract.
-- PDF / attachment reprocessing.
-- Per-bot configuration UI for multi-bot installs.
-- Built-in cross-encoder reranker (Cohere Rerank / BGE-reranker).
+The biggest single jump in test coverage since the project started:
+**57 → 240 tests, 100 → 857 assertions, 5/20 → 20/20 classes covered**.
+Every class in `includes/` now has at least one dedicated test file;
+estimated per-line coverage on business paths went from ~10 % to ~65-75 %.
+
+- **`PreVectorQueryTest`** (7 tests) — Search_Adapter's v0.6.0
+  short-circuit hook: previous-non-null bypass, plugin-disabled
+  fall-through, empty-vector fall-through, happy path with full
+  Pinecone response shape, namespace/bot_id/default fallback chain,
+  top_k fallback chain, exception swallowing with admin-notice transient.
+- **`ProxyAuthTest`** (11 tests) — Pinecone_Proxy auth + per-namespace
+  rate limit: missing/empty/wrong api-key rejection, legacy global
+  wildcard, per-namespace token isolation (the v0.6.0 hardening
+  contract), precedence rules, namespace from JSON body or query
+  string, 120-req/min ceiling enforcement, per-namespace bucket
+  isolation, weird-namespace-name md5 hashing.
+- **`OptionsSanitizeTest`** (16 tests) — enum allowlists, regex strips
+  (SQLi hardening on `table_name` and `motherduck_database`), numeric
+  clamps on every bounded option, boolean coercion, runtime-telemetry
+  preservation across admin saves, dimension-change guard branches.
+- **`VectorStoreSchemaTest`** (11 tests) — migration runner ordering
+  (v0 → v1 → v2 → v3, resume-from-v1, no-op when at target),
+  per-request memoisation (and its keying on backend|table|dim),
+  FLOAT[N] vs TINYINT[N] column branching, HNSW index gating,
+  `table_info()` count/null branches.
+- **`VectorStoreQueryRunTest`** (12 tests) — top-K orchestration:
+  dim mismatch throws, cache hit bypasses SQL, cache miss writes
+  result, dedup over-fetch (the v0.6.0 fix — `LIMIT top_k × 3`),
+  Pinecone-style filters compile into WHERE, metric branching
+  (cosine / l2sq / ip).
+- **`PineconeMigratorTest`** (11 tests) — constructor guards (api-key,
+  host), `normalise_host()` strips scheme + trailing slashes,
+  `pinecone_to_row()` with canonical + legacy metadata keys, null on
+  missing values, chunk_index/total_chunks string-to-int coercion,
+  `STATE_OPTION` constant pinned.
+- **`MysqlSyncTest`** (13 tests) — detect_kb_columns presence + cache,
+  full_sync row skip behaviour for malformed embeddings, bot_id
+  propagation from KB column, incremental cutoff at `last_sync_at - 120s`,
+  cascade-delete authorisation (4 paths: missing nonce, wrong nonce,
+  missing capability, both nonce variants).
+- **`CompactorTest`** (6 tests) — skip paths (disabled / sync too
+  recent), orphan detection + chunked DELETE, `max_deletes` cap,
+  KB pagination (the v0.6.0 memory fix), unreadable-table throw.
+- **`VectorStoreFacadeTest`** (23 tests) — every public write/read
+  helper: upsert (empty noop, dim mismatch, skip malformed,
+  batched INSERT OR REPLACE, cache-gen bump, single-quote escape,
+  chunk-size filter), delete (by-ids + by-source-url + cache bump),
+  count/list/fetch contracts, Parquet I/O round-trip,
+  storage_estimate float32 vs int8, `current()` singleton.
+- **`HealthEndpointTest`** (7 tests) — JSON shape that monitors
+  depend on, 200/503/disabled branching, full payload assertions,
+  metrics-snapshot keys pinned.
+- **`AsyncReprocessTest`** (10 tests, 1 skipped) — Action Scheduler
+  integration: enqueue_batch + dedup, process_post counter bumping +
+  re-throw on failure, status() snapshot merging, cancel_all.
+- **`PostReprocessorTest`** (17 tests, 1 skipped) — full reprocess
+  pipeline including API key resolution per provider (OpenAI /
+  Voyage / Gemini), vector_id md5 alignment, post-type mapping,
+  failure paths (no permalink, empty content, WP_Error from submit).
+- **`AdminAjaxTest`** (14 tests) — all 4 AJAX handlers' nonce +
+  capability gates, input sanitisation, batch_size clamp [1, 50],
+  default ['post', 'page'] fallback, error-path messages.
+- **`MotherDuckConnectionTest`** (7 tests) — token + database-name
+  guards (defence-in-depth on top of the Options sanitiser), init_sql
+  composition with single-quote escape in tokens.
+- **`CliTest`** (18 tests) — 11 sub-commands' argument parsing, error
+  paths on missing required flags, output via WP_CLI::log/success/error,
+  table format via format_items, command registration under the
+  documented namespace.
+
+### Tooling
+
+- **`tests/bootstrap.php`** grew a substantial library of reusable
+  test primitives:
+  - `MxChat_Test_WPDB` — pattern-matching `$wpdb` mock with callable
+    pagination + `NOT_FOUND` sentinel.
+  - `MxChat_DuckDB_Connection` recording-mock pattern (anonymous
+    classes inline per test).
+  - `Connection_Factory::$cache` reflection injection so
+    `new Vector_Store()` sees the mock without a real backend.
+  - `apply_filters` override registry via
+    `$GLOBALS['__test_filter_overrides']`.
+  - Nonce shim driven by `$GLOBALS['__test_valid_nonces']`.
+  - "First response wins" AJAX shim defeating production's
+    `catch (\Throwable)` re-wrap.
+  - WP_Query matcher closures + Action Scheduler queue stub.
+  - WP_CLI shim with `MxChat_Test_CliExit` for `::error` that die()s.
+  - `MxChat_Utils` stub recording every `submit_content_to_db` call.
+
+### Notes
+
+- The continue-on-error flag on the PHPStan CI job was dropped after
+  this bump's first CI run confirmed level 6 is clean with the new
+  szepeviktor/phpstan-wordpress stubs.
+- No public API surface changed in this release; safe drop-in upgrade
+  from 0.6.0.
 
 ---
 
