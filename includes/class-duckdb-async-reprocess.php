@@ -71,7 +71,7 @@ class MxChat_DuckDB_Async_Reprocess {
             'order'          => 'ASC',
         ]);
 
-        $ids = is_array($q->posts) ? array_map('intval', $q->posts) : [];
+        $ids = array_map('intval', $q->posts);
         $count = 0;
         foreach ($ids as $post_id) {
             // De-dup: skip if a job for this post id is already pending.

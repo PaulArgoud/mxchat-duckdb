@@ -46,6 +46,7 @@ jobs:
             --exclude='phpunit.xml*' \
             --exclude='phpstan.neon*' \
             --exclude='phpstan-baseline.neon' \
+            --exclude='phpstan/' \
             --exclude='.phpunit.result.cache' \
             --exclude='composer.lock' \
             --exclude='CONTRIBUTING.md' \

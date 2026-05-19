@@ -111,7 +111,7 @@ class MxChat_DuckDB_Pinecone_Proxy {
         $body = $req->get_json_params();
         if (is_array($body) && !empty($body['namespace'])) return (string) $body['namespace'];
         $qp = $req->get_query_params();
-        if (is_array($qp) && !empty($qp['namespace'])) return (string) $qp['namespace'];
+        if (!empty($qp['namespace'])) return (string) $qp['namespace'];
         return 'default';
     }
 

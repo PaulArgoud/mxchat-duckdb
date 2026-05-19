@@ -1,6 +1,6 @@
 <?php
 /**
- * @var array  $opts
+ * @var array<string, mixed> $opts
  * @var string $proxy_token
  * @var string $proxy_host
  */

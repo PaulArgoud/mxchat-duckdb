@@ -33,7 +33,7 @@ class MxChat_DuckDB_CLI {
      * ## EXAMPLES
      *     wp mxchat-duckdb test
      */
-    public function test($args, $assoc_args) {
+    public function test(array $args, array $assoc_args): void { /* -param array<int, string> $args; -param array<string, string|true> $assoc_args */
         try {
             $conn = MxChat_DuckDB_Connection_Factory::current();
             $ok = $conn->ping();
@@ -56,7 +56,7 @@ class MxChat_DuckDB_CLI {
      * ## EXAMPLES
      *     wp mxchat-duckdb stats
      */
-    public function stats($args, $assoc_args) {
+    public function stats(array $args, array $assoc_args): void { /* -param array<int, string> $args; -param array<string, string|true> $assoc_args */
         $opts = MxChat_DuckDB_Options::get();
         $metrics = MxChat_DuckDB_Metrics::snapshot();
 
@@ -101,7 +101,7 @@ class MxChat_DuckDB_CLI {
      *     wp mxchat-duckdb sync
      *     wp mxchat-duckdb sync --native
      */
-    public function sync($args, $assoc_args) {
+    public function sync(array $args, array $assoc_args): void { /* -param array<int, string> $args; -param array<string, string|true> $assoc_args */
         if (isset($assoc_args['native'])) {
             try {
                 $start = microtime(true);
@@ -151,7 +151,7 @@ class MxChat_DuckDB_CLI {
      * ## EXAMPLES
      *     wp mxchat-duckdb reprocess --post-types=post,page,product --batch=25
      */
-    public function reprocess($args, $assoc_args) {
+    public function reprocess(array $args, array $assoc_args): void { /* -param array<int, string> $args; -param array<string, string|true> $assoc_args */
         $post_types_raw = (string) ($assoc_args['post-types'] ?? 'post,page');
         $post_types = array_filter(array_map('sanitize_key', array_map('trim', explode(',', $post_types_raw))));
         if (empty($post_types)) $post_types = ['post', 'page'];
@@ -163,6 +163,10 @@ class MxChat_DuckDB_CLI {
         $progress = null;
 
         do {
+            // Default `$r` so a hypothetical WP_CLI::error() that doesn't
+            // die (overridden in tests, or a stub) still leaves us with a
+            // typed array rather than an undefined variable below.
+            $r = ['total' => 0, 'processed' => 0, 'failed' => 0, 'next_offset' => null];
             try {
                 $r = $sync->reprocess_posts($post_types, $batch, $offset);
             } catch (\Throwable $e) {
@@ -191,7 +195,7 @@ class MxChat_DuckDB_CLI {
      * ## EXAMPLES
      *     wp mxchat-duckdb compact
      */
-    public function compact($args, $assoc_args) {
+    public function compact(array $args, array $assoc_args): void { /* -param array<int, string> $args; -param array<string, string|true> $assoc_args */
         $r = MxChat_DuckDB_Compactor::instance()->run();
         if (!empty($r['ok'])) {
             \WP_CLI::success(sprintf('Pruned %d orphan vectors.', (int) ($r['deleted'] ?? 0)));
@@ -211,7 +215,7 @@ class MxChat_DuckDB_CLI {
      *     wp mxchat-duckdb metrics
      *     wp mxchat-duckdb metrics --reset
      */
-    public function metrics($args, $assoc_args) {
+    public function metrics(array $args, array $assoc_args): void { /* -param array<int, string> $args; -param array<string, string|true> $assoc_args */
         if (isset($assoc_args['reset'])) {
             MxChat_DuckDB_Metrics::reset();
             \WP_CLI::success('Metrics reset.');
@@ -239,7 +243,7 @@ class MxChat_DuckDB_CLI {
      * ## EXAMPLES
      *     wp mxchat-duckdb cache --flush
      */
-    public function cache($args, $assoc_args) {
+    public function cache(array $args, array $assoc_args): void { /* -param array<int, string> $args; -param array<string, string|true> $assoc_args */
         if (!isset($assoc_args['flush'])) {
             \WP_CLI::log('Pass --flush to confirm.');
             return;
@@ -264,7 +268,7 @@ class MxChat_DuckDB_CLI {
      * ## EXAMPLES
      *     wp mxchat-duckdb export --path=/tmp/mxchat-backup.parquet
      */
-    public function export($args, $assoc_args) {
+    public function export(array $args, array $assoc_args): void { /* -param array<int, string> $args; -param array<string, string|true> $assoc_args */
         $path = (string) ($assoc_args['path'] ?? '');
         if ($path === '') \WP_CLI::error('Missing --path=<file>.');
         try {
@@ -286,7 +290,7 @@ class MxChat_DuckDB_CLI {
      * ## EXAMPLES
      *     wp mxchat-duckdb import --path=/tmp/mxchat-backup.parquet
      */
-    public function import($args, $assoc_args) {
+    public function import(array $args, array $assoc_args): void { /* -param array<int, string> $args; -param array<string, string|true> $assoc_args */
         $path = (string) ($assoc_args['path'] ?? '');
         if ($path === '') \WP_CLI::error('Missing --path=<file>.');
         try {
@@ -312,7 +316,7 @@ class MxChat_DuckDB_CLI {
      * ## EXAMPLES
      *     wp mxchat-duckdb async-reprocess --post-types=post,page,product
      */
-    public function async_reprocess($args, $assoc_args) {
+    public function async_reprocess(array $args, array $assoc_args): void { /* -param array<int, string> $args; -param array<string, string|true> $assoc_args */
         $post_types_raw = (string) ($assoc_args['post-types'] ?? 'post,page');
         $post_types = array_filter(array_map('sanitize_key', array_map('trim', explode(',', $post_types_raw))));
         if (empty($post_types)) $post_types = ['post', 'page'];
@@ -346,7 +350,7 @@ class MxChat_DuckDB_CLI {
      *         --host=my-index-abcd.svc.us-east1-aws.pinecone.io \
      *         --namespace=default
      */
-    public function migrate_from_pinecone($args, $assoc_args) {
+    public function migrate_from_pinecone(array $args, array $assoc_args): void { /* -param array<int, string> $args; -param array<string, string|true> $assoc_args */
         $api_key = (string) ($assoc_args['api-key'] ?? '');
         $host    = (string) ($assoc_args['host'] ?? '');
         $ns      = (string) ($assoc_args['namespace'] ?? '');

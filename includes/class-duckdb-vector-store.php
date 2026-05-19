@@ -170,8 +170,8 @@ class MxChat_DuckDB_Vector_Store {
                 $this->literal_string((string) ($v['source_url'] ?? '')),
                 $this->literal_string((string) ($v['role_restriction'] ?? 'public')),
                 $this->literal_string((string) ($v['content_type'] ?? 'content')),
-                isset($v['chunk_index']) && $v['chunk_index'] !== null ? (int) $v['chunk_index'] : 'NULL',
-                isset($v['total_chunks']) && $v['total_chunks'] !== null ? (int) $v['total_chunks'] : 'NULL',
+                isset($v['chunk_index']) ? (int) $v['chunk_index'] : 'NULL',
+                isset($v['total_chunks']) ? (int) $v['total_chunks'] : 'NULL',
                 !empty($v['is_chunked']) ? 'TRUE' : 'FALSE'
             );
         }

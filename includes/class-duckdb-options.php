@@ -249,7 +249,9 @@ class MxChat_DuckDB_Options {
         }
 
         // Single source of truth lives in mxchat-basic. Use it when possible.
-        if (class_exists('MxChat_Utils') && method_exists('MxChat_Utils', 'embedding_model_dimensions')) {
+        // (is_callable rather than method_exists so PHPStan + the WP stubs
+        // don't narrow the second check away in static analysis.)
+        if (is_callable(['MxChat_Utils', 'embedding_model_dimensions'])) {
             $dim = (int) MxChat_Utils::embedding_model_dimensions($active);
             if ($dim > 0) return $dim;
         }

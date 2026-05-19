@@ -1,6 +1,6 @@
 <?php
 /**
- * @var array $opts Plugin options (provided by the parent settings.php).
+ * @var array<string, mixed> $opts Plugin options (provided by the parent settings.php).
  */
 if (!defined('ABSPATH')) { exit; }
 ?>

@@ -35,13 +35,20 @@ class MxChat_DuckDB_Sync {
     }
 
     public function register_hooks(): void {
-        add_action(self::CRON_HOOK, [$this, 'incremental_sync']);
+        // Wrap incremental_sync() so the action contract is void
+        // (the return value is the row count, useful for tests + AJAX
+        // but ignored by WordPress on cron tick).
+        add_action(self::CRON_HOOK, [$this, 'incremental_sync_as_action']);
         if (!wp_next_scheduled(self::CRON_HOOK)) {
             wp_schedule_event(time() + 3600, 'hourly', self::CRON_HOOK);
         }
 
         add_action('wp_ajax_mxchat_delete_pinecone_prompt', [$this, 'cascade_delete_handler'], 1);
         add_action('admin_post_mxchat_delete_pinecone_prompt', [$this, 'cascade_delete_handler'], 1);
+    }
+
+    public function incremental_sync_as_action(): void {
+        $this->incremental_sync();
     }
 
     // ─── MySQL pipeline ─────────────────────────────────────────────────

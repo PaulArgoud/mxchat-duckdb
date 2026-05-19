@@ -1,5 +1,5 @@
 <?php
-/** @var array $opts */
+/** @var array<string, mixed> $opts */
 if (!defined('ABSPATH')) { exit; }
 ?>
 <h2><?php esc_html_e('MotherDuck', 'mxchat-duckdb'); ?></h2>

@@ -29,10 +29,17 @@ class MxChat_DuckDB_Compactor {
     }
 
     public function register_hooks(): void {
-        add_action(self::CRON_HOOK, [$this, 'run']);
+        // Wrap rather than hook run() directly: actions ignore return values
+        // but run() returns a useful summary for tests + AJAX. The wrapper
+        // makes the action's void contract explicit (PHPStan-WP enforces it).
+        add_action(self::CRON_HOOK, [$this, 'run_as_action']);
         if (!wp_next_scheduled(self::CRON_HOOK)) {
             wp_schedule_event(self::next_run_timestamp(), 'daily', self::CRON_HOOK);
         }
+    }
+
+    public function run_as_action(): void {
+        $this->run();
     }
 
     /**

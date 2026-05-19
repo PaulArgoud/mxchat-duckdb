@@ -142,3 +142,9 @@ if (!class_exists('wpdb')) {
         public function prepare($query, ...$args) { return ''; }
     }
 }
+
+// WP-CLI namespaced helpers used by class-duckdb-cli.php live in a
+// separate stub file (phpstan/wp-cli-stubs.php) registered via the
+// `stubFiles` directive in phpstan.neon.dist. Splitting the file is
+// necessary because PHP namespace declarations cannot follow non-
+// namespaced statements in the same file.

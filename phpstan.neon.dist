@@ -1,3 +1,8 @@
+services:
+    -
+        class: MxChat\DuckDB\PHPStan\UnsafeSqlConstructionRule
+        tags: [phpstan.rules.rule]
+
 parameters:
     level: 6
     paths:
@@ -7,8 +12,13 @@ parameters:
         - admin
     excludePaths:
         - vendor
-        - tests/_output
-        - build
+        - tests/_output (?)
+        - build (?)
+        # The rule itself uses PHPStan + nikic/php-parser types that aren't
+        # in the analyser's own classmap, so analysing it would generate
+        # false positives. The rule's logic is exercised by the unit test
+        # UnsafeSqlConstructionRuleTest instead.
+        - phpstan
     treatPhpDocTypesAsCertain: false
     # WordPress / wpdb / WP_REST_Request / WP_Post stubs come from
     # szepeviktor/phpstan-wordpress (auto-loaded via phpstan/extension-installer
@@ -16,11 +26,31 @@ parameters:
     # fallback for environments without composer install.
     bootstrapFiles:
         - tests/phpstan-bootstrap.php
+        - phpstan/UnsafeSqlConstructionRule.php
     dynamicConstantNames:
         - WP_DEBUG
         - WP_CLI
     ignoreErrors:
         - '#Call to an undefined method MxChat_DuckDB_Connection::table_name_quoted\(\)#'
+        # WP-CLI exposes WP_CLI\Utils\format_items and make_progress_bar
+        # as helpers; szepeviktor/phpstan-wordpress doesn't currently ship
+        # signatures for them, so PHPStan flags them as not-found. The
+        # functions are guaranteed present whenever this file actually
+        # runs (the top-level `if (!WP_CLI) return;` guard ensures it).
+        # The PHPUnit shim re-declares them via eval() at test runtime.
+        -
+            message: '#Function WP_CLI\\Utils\\(format_items|make_progress_bar) not found#'
+            path: includes/class-duckdb-cli.php
+        # The transient-exception class probe in MxChat_DuckDB_Embedded_Connection::is_transient_error()
+        # iterates over class names that PHPStan doesn't know exist (the real
+        # DuckDB / saturio extensions aren't in any stub package). At runtime
+        # the loop short-circuits via class_exists($cls, false); statically
+        # PHPStan reduces both is_a() calls to "always false" because the
+        # types never narrow. This is the right runtime behaviour but a
+        # misleading static signal — ignore it explicitly.
+        -
+            message: '#Call to function is_a\(\) with Throwable and \*NEVER\* will always evaluate to false#'
+            path: includes/class-duckdb-embedded-connection.php
     # Path to level 8: once a CI run with the new dev-deps is green at level 6,
     # bump to 7, run, baseline any noise, bump to 8, drop continue-on-error in
     # ci.yml. Doing it incrementally keeps each diff reviewable.

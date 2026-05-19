@@ -1,6 +1,6 @@
 <?php
 /**
- * @var array $opts
+ * @var array<string, mixed> $opts
  * @var int   $detected_dim
  */
 if (!defined('ABSPATH')) { exit; }
