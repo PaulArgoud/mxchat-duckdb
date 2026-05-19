@@ -52,6 +52,7 @@ require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-vector-store-query.php';
 require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-vector-store.php';
 require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-mirror-bootstrap.php';
 require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-mirror-drain.php';
+require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-mirror-drift-check.php';
 require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-mysql-sync.php';
 require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-post-reprocessor.php';
 require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-sync.php';

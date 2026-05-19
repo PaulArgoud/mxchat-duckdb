@@ -463,6 +463,55 @@ class MxChat_DuckDB_CLI {
             $result['remaining']
         ));
     }
+
+    /**
+     * Run a drift check between MotherDuck (primary) and the local
+     * mirror immediately, without waiting for the next daily tick.
+     * Prints per-bot_id (count, signature) and flags divergence.
+     *
+     * ## EXAMPLES
+     *     wp mxchat-duckdb mirror-drift-check
+     */
+    public function mirror_drift_check(array $args, array $assoc_args): void {
+        try {
+            $result = MxChat_DuckDB_Mirror_Drift_Check::instance()->run();
+        } catch (\Throwable $e) {
+            \WP_CLI::error($e->getMessage());
+        }
+        if (!empty($result['skipped'])) {
+            \WP_CLI::warning('Skipped: ' . ($result['reason'] ?? 'unknown'));
+            return;
+        }
+        if (empty($result['drift'])) {
+            \WP_CLI::success('No drift detected. Primary and local agree on every bot_id.');
+            return;
+        }
+        $note = $result['recoverable_via_drain']
+            ? ' (drainable — within SMALL_DIFFERENTIAL with pending entries; let drain catch up)'
+            : ' (real drift — run mirror-bootstrap --reset to re-converge, or investigate manually)';
+        \WP_CLI::warning('Drift on bot_ids=[' . implode(',', $result['drifted_bots']) . ']' . $note);
+
+        // Print a per-bot table for visibility.
+        $rows = [];
+        $bots = array_unique(array_merge(
+            array_keys($result['primary'] ?? []),
+            array_keys($result['local']   ?? [])
+        ));
+        foreach ($bots as $bot) {
+            $p = $result['primary'][$bot] ?? ['count' => 0, 'sig' => ''];
+            $l = $result['local'][$bot]   ?? ['count' => 0, 'sig' => ''];
+            $rows[] = [
+                'bot_id'        => $bot,
+                'primary_count' => (string) $p['count'],
+                'local_count'   => (string) $l['count'],
+                'primary_sig'   => substr($p['sig'], 0, 8),
+                'local_sig'     => substr($l['sig'], 0, 8),
+                'drift'         => in_array($bot, $result['drifted_bots'], true) ? 'YES' : '-',
+            ];
+        }
+        \WP_CLI\Utils\format_items('table', $rows,
+            ['bot_id', 'primary_count', 'local_count', 'primary_sig', 'local_sig', 'drift']);
+    }
 }
 
 \WP_CLI::add_command('mxchat-duckdb', 'MxChat_DuckDB_CLI');

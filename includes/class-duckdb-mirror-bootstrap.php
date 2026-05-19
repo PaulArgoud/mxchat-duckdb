@@ -43,6 +43,14 @@ class MxChat_DuckDB_Mirror_Bootstrap {
     const STATUS_BOOTSTRAPPING = 'bootstrapping';
     const STATUS_ACTIVE        = 'active';
     const STATUS_ERROR         = 'error';
+    /**
+     * Mirror is up but the daily drift check found primary and local
+     * diverged on count or signature for at least one bot_id. Set by
+     * Mirror_Drift_Check; admins should run `wp mxchat-duckdb
+     * mirror-bootstrap --reset` (or wait for the auto-reconcile that
+     * a future release will queue) to re-converge.
+     */
+    const STATUS_DRIFTED       = 'drifted';
 
     /**
      * Default rows per tick. Sized for ~1 MB of SQL plus parquet-style
@@ -274,9 +282,9 @@ class MxChat_DuckDB_Mirror_Bootstrap {
     public static function get_status(): string {
         $val = (string) get_option(self::STATUS_OPTION, '');
         if ($val === '') return self::STATUS_DISABLED;
-        return in_array($val, [self::STATUS_DISABLED, self::STATUS_BOOTSTRAPPING, self::STATUS_ACTIVE, self::STATUS_ERROR], true)
-            ? $val
-            : self::STATUS_DISABLED;
+        $known = [self::STATUS_DISABLED, self::STATUS_BOOTSTRAPPING, self::STATUS_ACTIVE,
+                  self::STATUS_ERROR, self::STATUS_DRIFTED];
+        return in_array($val, $known, true) ? $val : self::STATUS_DISABLED;
     }
 
     /**

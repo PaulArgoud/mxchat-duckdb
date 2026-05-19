@@ -56,13 +56,18 @@ class MxChat_DuckDB_Health {
         // are zero on disabled installs.
         if (class_exists('MxChat_DuckDB_Mirror_Bootstrap') && class_exists('MxChat_DuckDB_Mirrored_Connection')) {
             $pending_state = MxChat_DuckDB_Mirrored_Connection::pending_state();
+            $last_drift = class_exists('MxChat_DuckDB_Mirror_Drift_Check')
+                ? MxChat_DuckDB_Mirror_Drift_Check::get_last_check_timestamp()
+                : 0;
             $payload['mirror'] = [
-                'enabled'           => !empty($opts['motherduck_mirror_enabled']),
-                'status'            => MxChat_DuckDB_Mirror_Bootstrap::get_status(),
-                'pending_count'     => count($pending_state['pending']),
-                'quarantine_count'  => count($pending_state['quarantine']),
-                'drained_total'     => (int) $pending_state['drained_total'],
-                'quarantine_total'  => (int) $pending_state['quarantine_total'],
+                'enabled'              => !empty($opts['motherduck_mirror_enabled']),
+                'status'               => MxChat_DuckDB_Mirror_Bootstrap::get_status(),
+                'pending_count'        => count($pending_state['pending']),
+                'quarantine_count'     => count($pending_state['quarantine']),
+                'drained_total'        => (int) $pending_state['drained_total'],
+                'quarantine_total'     => (int) $pending_state['quarantine_total'],
+                'last_drift_check_at'  => $last_drift,
+                'last_drift_check_age_s' => $last_drift > 0 ? (time() - $last_drift) : null,
             ];
         }
 

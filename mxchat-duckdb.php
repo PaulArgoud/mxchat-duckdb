@@ -54,6 +54,7 @@ if (file_exists(MXCHAT_DUCKDB_DIR . 'vendor/autoload.php')) {
     // the dependency order matters at parse time.
     require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-mirror-bootstrap.php';
     require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-mirror-drain.php';
+    require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-mirror-drift-check.php';
     // Ingestion pipelines: MySQL sync + WP post reprocessor + sync facade.
     require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-mysql-sync.php';
     require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-post-reprocessor.php';
@@ -129,6 +130,14 @@ class MxChat_DuckDB_Plugin {
             // (AS dedupes via the hook+group key).
             if (class_exists('MxChat_DuckDB_Mirror_Drain')) {
                 MxChat_DuckDB_Mirror_Drain::instance()->register_hooks();
+            }
+
+            // Mirror drift check: 24h recurring Action Scheduler tick
+            // that compares (count, vector_id-set hash) per bot_id
+            // between primary and local. Detection only in v1; admin
+            // sees STATUS_DRIFTED + a CLI note when divergence is real.
+            if (class_exists('MxChat_DuckDB_Mirror_Drift_Check')) {
+                MxChat_DuckDB_Mirror_Drift_Check::instance()->register_hooks();
             }
 
             // Trigger a bootstrap when the admin transitions the
@@ -212,6 +221,9 @@ class MxChat_DuckDB_Plugin {
         }
         if (function_exists('as_unschedule_all_actions') && class_exists('MxChat_DuckDB_Mirror_Bootstrap')) {
             as_unschedule_all_actions(MxChat_DuckDB_Mirror_Bootstrap::ACTION_HOOK, [], MxChat_DuckDB_Mirror_Bootstrap::ACTION_GROUP);
+        }
+        if (function_exists('as_unschedule_all_actions') && class_exists('MxChat_DuckDB_Mirror_Drift_Check')) {
+            as_unschedule_all_actions(MxChat_DuckDB_Mirror_Drift_Check::ACTION_HOOK, [], MxChat_DuckDB_Mirror_Drift_Check::ACTION_GROUP);
         }
     }
 
