@@ -4,7 +4,7 @@ Tags: chatbot, ai, vector-search, duckdb, motherduck, pinecone, embeddings, rag,
 Requires at least: 6.0
 Tested up to: 6.7
 Requires PHP: 8.0
-Stable tag: 0.8.0
+Stable tag: 0.9.0
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -26,7 +26,7 @@ Both backends use DuckDB's native VSS (vector similarity search) extension with 
 = Features =
 
 * Two backend modes — embedded `.duckdb` file or MotherDuck cloud (via DuckDB's native `ATTACH 'md:...'`).
-* HNSW-indexed similarity search via DuckDB's VSS extension.
+* HNSW-indexed similarity search via DuckDB's VSS extension (embedded backend only; MotherDuck cloud falls back to brute-force scans — VSS is not supported cloud-side, plugin detects this automatically and surfaces an admin notice).
 * Hybrid BM25 + vector retrieval (optional) via DuckDB FTS.
 * Query result cache keyed by embedding hash + filter + bot.
 * Per-source dedup and custom reranker hook.
@@ -94,6 +94,20 @@ By default, no — your `.duckdb` file is preserved on uninstall because it may 
 4. Async reprocess progress driven by Action Scheduler.
 
 == Changelog ==
+
+= 0.9.0 =
+* Security defence-in-depth + MotherDuck capability honesty. No schema migration; safe drop-in from 0.8.0. One new method on the `MxChat_DuckDB_Connection` interface (`supports_capability()`) — only relevant for custom connection implementations.
+* New: typed capability negotiation. `Connection::supports_capability('vss.persistent_index')` replaces the previous identifier-prefix sniffing — MotherDuck returns false, embedded DuckDB returns true. Unknown tokens degrade to false (forward-compat).
+* New: prepared-statement path on the native DuckDB extension. Probes once for a usable bound-parameter API (`preparedStatement` then `prepare`), reuses it for `Connection::execute($sql, $params)`, falls back transparently when unsupported. New filter `mxchat_duckdb_use_prepared_statements` to force-disable.
+* New: MotherDuck + HNSW degrades cleanly. The schema migration asks `Connection::supports_capability(CAP_VSS_PERSISTENT_INDEX)` and skips `INSTALL vss` / `LOAD vss` / `CREATE INDEX … USING HNSW` when the answer is false (the VSS extension is unsupported on MotherDuck cloud-side tables). Replaces a silent `try/catch` with an explicit `error_log` line and persists the verdict in meta.
+* New: persistent capability flags `fts_available` and `hnsw_available` in `mxchat_duckdb_schema_meta`. New accessors `Vector_Store::hnsw_available()` / `Vector_Store::fts_available()`. The hybrid read path now consults the FTS flag before attempting BM25 — no more one-failing-SQL-round-trip + one `error_log` entry per hybrid query on FTS-less DuckDB builds.
+* New: admin notice on the plugin settings screen when `mode=motherduck` + `hnsw_enabled=true` is configured, with the workaround spelled out.
+* Changed: `Vector_Store_Query::compile_filter()` returns a `[fragments, params]` tuple instead of inlined SQL. `bot_id` and every Pinecone-style filter value (`$eq`/`$ne`/`$in`/`$nin`/`$gte`/`$gt`/`$lte`/`$lt`), plus the BM25 `query_text`, now reach the connection as bound `?` parameters. CLI fallback inlines them back through the pre-existing safe-literal helper — observable behaviour identical.
+* Changed: `quote_ident()` throws `InvalidArgumentException` on unsafe input (anything outside `[a-zA-Z0-9_]` or empty) instead of silently stripping. Defence-in-depth on top of the options sanitiser.
+* Changed: `is_transient_error()` recognises retryable failures via three signals — exception class (DuckDB / Saturio / PDOException with SQLSTATE discrimination), HTTP status code on `getCode()` (5xx + 429), and multi-word substring anchors. Replaces the previous loose substring matching on bare `'timeout'` / `'network'` that mis-classified config errors as retryable.
+* New: custom PHPStan rule `MxChat\DuckDB\PHPStan\UnsafeSqlConstructionRule` bans ad-hoc SQL construction (concat or sprintf with multi-word SQL phrases + non-constant `%s`) outside an allow-list of helper files.
+* Fixed: PHPStan baseline — every non-typing finding eliminated (164 → 134). `function.alreadyNarrowedType` × 3, `notIdentical.alwaysTrue` × 2, `identical.alwaysTrue` × 1, `variable.undefined` × 1, `return.void` × 2, `function.impossibleType` × 1, `function.notFound` × 4 (WP-CLI helpers, ignored via targeted patterns).
+* Tests: 245 → 261 tests, 880 → 930 assertions.
 
 = 0.8.0 =
 * DuckDB-feature exploitation pass. No schema migration, no public API break.
@@ -174,6 +188,9 @@ By default, no — your `.duckdb` file is preserved on uninstall because it may 
 * Initial release.
 
 == Upgrade Notice ==
+
+= 0.9.0 =
+Security defence-in-depth + MotherDuck capability honesty. No schema migration. MotherDuck users with `hnsw_enabled=true` will see a new admin notice explaining that HNSW is not supported cloud-side and queries fall back to brute-force; either switch to Embedded mode for HNSW acceleration or disable the toggle to silence. Safe drop-in upgrade.
 
 = 0.8.0 =
 DuckDB-feature exploitation pass. No schema migration. The MotherDuck connection now uses a persistent DuckDB secret rather than embedding the token in every ATTACH URL — **re-test the connection after upgrading** to confirm it still works. The native sync (`wp mxchat-duckdb sync --native`) is opt-in only; defaults unchanged. Safe drop-in from 0.7.0.

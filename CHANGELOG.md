@@ -9,13 +9,241 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Planned
 
-- Submit upstream patch (`mxchat_pre_vector_query` filter, WP-canonical
-  `pre_*` convention) to mxchat-basic. The legacy
-  `mxchat_pinecone_matches_override` hook stays registered for installs
-  that applied the previous patch contract.
+- Local mirror for MotherDuck installs: maintain a local `.duckdb`
+  shadow with HNSW indexed for fast reads; write-through on
+  upsert/delete; bootstrap via Parquet dump. Cadred in a separate
+  design doc before implementation.
+- Integration smoke test against a real DuckDB binary in CI (matrix
+  job installs `duckdb`, runs ensure_schema + upsert + query
+  end-to-end).
+- Mutation testing via Infection (informational CI job).
+- PHPStan level 7 (clean up the 134 remaining `missingType.*`
+  findings).
+- Submit upstream patch (`mxchat_pre_vector_query` filter,
+  WP-canonical `pre_*` convention) to mxchat-basic. The legacy
+  `mxchat_pinecone_matches_override` hook stays registered for
+  installs that applied the previous patch contract.
 - PDF / attachment reprocessing.
 - Per-bot configuration UI for multi-bot installs.
 - Built-in cross-encoder reranker (Cohere Rerank / BGE-reranker).
+
+---
+
+## [0.9.0] — 2026-05-19
+
+Security defence-in-depth + MotherDuck capability honesty pass. **No
+schema migration**, no public API break; existing `Vector_Store::current()`,
+`compile_filter()`, and the cache/generation contract from 0.6.0 onwards
+all keep working unchanged. One new method on the `MxChat_DuckDB_Connection`
+interface (`supports_capability()`) — only relevant for callers that
+implement their own connection class, which is not a documented extension
+point.
+
+### Added
+
+- **`MxChat_DuckDB_Connection::supports_capability(string $capability): bool`**
+  — typed capability negotiation between Schema/Query and the underlying
+  backend, replacing the previous identifier-prefix sniffing
+  (`str_starts_with($identifier, 'motherduck:')`). First capability token
+  is `CAP_VSS_PERSISTENT_INDEX`; MotherDuck returns false, embedded DuckDB
+  returns true. Forward-compat by design — unknown tokens return false so
+  a caller asking about a brand-new capability gets a clean "no, plan
+  accordingly" instead of a fatal. Cleaner extension surface for future
+  capability gaps (CSV import, json_each, FTS persistence variants, …).
+- **Prepared-statement path on the native DuckDB extension.**
+  `MxChat_DuckDB_Embedded_Connection::execute()` now probes the extension
+  once for a usable prepared API (`preparedStatement` then `prepare`),
+  reuses it for any subsequent `execute($sql, $params)` call with bound
+  parameters, and falls back transparently to the existing inline path
+  when:
+    - the probe fails (extension binding too old / different shape),
+    - the filter `mxchat_duckdb_use_prepared_statements` is set to false,
+    - or the underlying call signals a binding-surface error
+      (distinguished from a real SQL error so the latter still surfaces).
+  Vector embeddings still travel inlined because no binding reliably
+  accepts a `FLOAT[N]` array; everything else is bound. New public
+  capability accessor: `Embedded_Connection::supports_prepared(): bool`.
+- **Persistent HNSW availability flag** in `mxchat_duckdb_schema_meta`
+  (`hnsw_available` = `'1'` | `'0'`). Written by `migration_v1_base_schema`
+  after the CREATE INDEX attempt or after deciding to skip it on
+  MotherDuck. Read via the new public accessors
+  `Vector_Store_Schema::hnsw_available(): ?bool` and the matching
+  `Vector_Store::hnsw_available()` / `Vector_Store::fts_available()`
+  delegations on the facade. Lets the admin UI and diagnostics report
+  the true index state instead of inferring it from the option toggle.
+- **MotherDuck + HNSW: clean degradation.** The schema migration now
+  asks the connection `supports_capability(CAP_VSS_PERSISTENT_INDEX)`
+  and skips `INSTALL vss` / `LOAD vss` / `CREATE INDEX … USING HNSW`
+  entirely when the answer is false (the VSS extension is not supported
+  on MotherDuck cloud-side tables —
+  [docs](https://motherduck.com/docs/concepts/duckdb-extensions/)).
+  Saves three pointless network round-trips on every fresh install,
+  replaces the silent `try/catch` with an explicit `error_log` line
+  that names the workaround ("Switch to Embedded mode for HNSW
+  acceleration"), and persists `hnsw_available='0'` so callers know
+  queries will run as brute-force scans.
+- **Admin notice for the HNSW-on-MotherDuck mismatch.** A new
+  `admin_notices` handler on the plugin's settings screen surfaces a
+  `notice-warning` when `mode=motherduck` + `hnsw_enabled=true` is
+  configured, with a concrete recommendation (switch to Embedded for
+  HNSW, or disable the toggle to silence the warning).
+- **Persistent FTS availability flag** in `mxchat_duckdb_schema_meta`
+  (`fts_available` = `'1'` | `'0'`). Written by `migration_v3_fts_index`
+  on success or after the install / load / `PRAGMA create_fts_index`
+  pipeline fails. Vector_Store_Query consults it through a per-request
+  static cache before attempting the BM25 leg of a hybrid query, so
+  FTS-less DuckDB builds no longer pay the cost of one failing SQL
+  round-trip + one `error_log` entry per hybrid query. Public test hook:
+  `Vector_Store_Query::reset_fts_status_cache()`.
+- **Custom PHPStan rule `MxChat\DuckDB\PHPStan\UnsafeSqlConstructionRule`**
+  banning ad-hoc SQL construction outside an allow-list of helper files
+  (`trait-duckdb-sql-helpers`, the Vector_Store classes, the connection
+  classes, the sync/compactor/migrator pipelines). Flags both `.`
+  concatenation and `sprintf()` calls whose format string contains a
+  multi-word SQL phrase (`SELECT … FROM`, `INSERT INTO`, `DELETE FROM`,
+  `CREATE TABLE`, `WITH name AS (`, etc.) and where at least one `%s`
+  substitution is a non-constant expression. Multi-word matching is
+  deliberate — a bare `DELETE` in a REST URL path or `from` in a CLI
+  message no longer triggers a false positive. Registered via
+  `phpstan.neon.dist`; autoloaded via the `phpstan/` classmap added to
+  `composer.json`'s `autoload-dev`; excluded from the release zip.
+- **`MxChat_DuckDB_Connection::execute()` parameter binding becomes the
+  default path on the read side.** `Vector_Store_Query::compile_filter()`
+  now returns a `[fragments, params]` tuple instead of inlined SQL
+  strings; `build_where()` plumbs the params through so `bot_id`, every
+  Pinecone-style filter value (`$eq` / `$ne` / `$in` / `$nin` / `$gte`
+  / `$gt` / `$lte` / `$lt`), and the BM25 `query_text` reach the
+  connection as bound `?` parameters. The CLI fallback path inlines
+  them back to safely-escaped literals through the pre-existing
+  `inline_params()` helper, so observable behaviour is identical on
+  every backend.
+
+### Changed
+
+- **`quote_ident()` now throws on unsafe input** instead of silently
+  stripping non-`[a-zA-Z0-9_]` characters. The previous behaviour turned
+  `"my-table"` into `"mytable"` without warning — queries would hit a
+  different (possibly non-existent) table with no error visible to the
+  caller. The options sanitiser already enforces the safe character
+  class at save time, so the throw is defence-in-depth: it catches
+  programmer error where a non-sanitised string sneaks past the surface
+  validation. Empty identifiers are also rejected.
+- **`is_transient_error()` recognises retryable failures via three
+  signals**, in precedence order:
+  - Exception class — `DuckDB\Exception\NetworkException`,
+    `DuckDB\Exception\TimeoutException`,
+    `Saturio\DuckDB\Exception\ConnectionException`, plus a special case
+    for `PDOException` discriminated by SQLSTATE (08xxx = connection,
+    40001 = serialization → retry; 23000 = integrity → don't).
+  - HTTP status code on `getCode()` — 429 / 5xx → retry.
+  - Multi-word substring anchors (`connection reset`, `tls handshake`,
+    `service unavailable`, `read timeout`, `gateway timeout`, …).
+  Replaces the previous loose substring matching on bare words like
+  `'timeout'` or `'network'`, which would mis-classify a query-level
+  `statement timeout exceeded` (config error) or `network protocol
+  error` (logic error) as retryable.
+- `Vector_Store_Schema::get_schema_version()` / `set_schema_version()`
+  refactored to share a `get_meta()` / `set_meta()` pair with the new
+  FTS and HNSW flags. Single SQL shape for every meta read/write.
+- `MxChat_DuckDB_Embedded_Connection::execute_native()` now goes through
+  the shared `result_to_rows()` materialiser (used by both the
+  unprepared and prepared paths) to normalise iterables, `rows()`, and
+  `fetchAll()` shapes that different DuckDB PHP bindings expose.
+- **WP-CLI command methods get typed signatures**: every
+  `MxChat_DuckDB_CLI::*($args, $assoc_args)` now declares
+  `(array $args, array $assoc_args): void`. The bodies are unchanged.
+
+### Fixed (static-analysis findings)
+
+PHPStan baseline pass — every non-typing finding eliminated, total
+errors 164 → 134:
+
+- **`function.alreadyNarrowedType` × 3** — redundant `is_array()` on
+  values already narrowed to array (`Async_Reprocess::enqueue_batch`,
+  `Pinecone_Proxy::namespace_from_request`), and `method_exists()`
+  inside a `class_exists()` block (`Options::detect_embedding_dim`)
+  replaced with `is_callable(['Class', 'method'])` which doesn't
+  collapse under static analysis.
+- **`notIdentical.alwaysTrue` × 2** — `isset(…) && … !== null` reduced
+  to `isset(…)` (the second check is implied by the first).
+- **`identical.alwaysTrue` × 1** — PDOException special-cased outside
+  the `transient_classes` loop so the in-loop `=== 'PDOException'`
+  check is no longer unreachable.
+- **`variable.undefined` × 1** — `$r` initialised with a default shape
+  before the try/catch in `CLI::reprocess` so the post-catch branch
+  doesn't depend on `WP_CLI::error()` dying (which it does at runtime
+  but not in stubs).
+- **`return.void` × 2** — `Compactor::run` and `Sync::incremental_sync`
+  return values are useful for tests + AJAX but ignored by the
+  `add_action` callbacks. Wrapped via `run_as_action()` /
+  `incremental_sync_as_action(): void` to satisfy the action-callback
+  contract enforced by szepeviktor/phpstan-wordpress.
+- **`function.impossibleType` × 1** — ignored via a targeted pattern in
+  `phpstan.neon.dist`; the DuckDB exception classes probed by
+  `is_transient_error()` are real at runtime via the PECL extension
+  but invisible to static analysis. Documented in the config.
+- **`function.notFound` × 4** — `WP_CLI\Utils\format_items` and
+  `WP_CLI\Utils\make_progress_bar` aren't shipped by
+  szepeviktor/phpstan-wordpress. Ignored via a targeted pattern; the
+  functions are guaranteed present whenever the file actually runs
+  (the top-level `if (!WP_CLI) return;` guard ensures it).
+
+### Tests
+
+- 245 → 261 tests, 880 → 930 assertions. New / rewritten cases:
+  - `VectorStoreSchemaTest::test_motherduck_backend_skips_hnsw_and_vss_install`
+    — connection mock with `identifier() = 'motherduck:my_db (ext)'`;
+    asserts no `INSTALL vss`, no `USING HNSW` DDL, and
+    `hnsw_available='0'` persisted.
+  - `VectorStoreSchemaTest::test_hnsw_disabled_skips_index_creation`
+    extended to verify the meta flag is written even when the user
+    toggled HNSW off (so the admin UI reads "unavailable", not "unknown").
+  - `VectorStoreQueryRunTest::test_hybrid_path_skips_bm25_when_fts_marked_unavailable`
+    — pre-seeds the static cache and asserts no `match_bm25` SQL fires
+    and no second meta probe is issued.
+  - `VectorStoreQueryRunTest::test_hybrid_path_consults_meta_table_when_status_unknown`
+    — first hybrid call with unknown status reads `mxchat_duckdb_schema_meta`;
+    BM25 leg is skipped when the meta says `'0'`.
+  - `VectorStoreQueryRunTest`: assertions on `bot_id = '…'` /
+    `content_type = '…'` substrings replaced with assertions on the
+    new `?`-placeholder shape + the `params_log` recorded by the mock
+    connection.
+  - `FilterCompilationTest` (12 cases) rewritten to assert on the new
+    `[fragments, params]` return tuple of `compile_filter()`.
+  - `UnsafeSqlConstructionRuleTest` (7 cases) — fixture-driven AST
+    parsing of representative snippets through the custom rule; covers
+    positive flags (concat + sprintf), allow-list bypass, `%d`-only
+    sprintf, constant-only `%s`, non-SQL concat, and pure-constant
+    concat.
+  - `VectorStoreHelpersTest`: 3 new cases for the `quote_ident()` throw
+    contract (unsafe characters, empty string, alphanumeric+underscore
+    accepted).
+  - `EmbeddedConnectionHelpersTest`: 2 new cases for the rewritten
+    `is_transient_error()` — HTTP status code signal (429/5xx retried,
+    400/403/404 not), and word-anchored substring matching rejecting
+    `statement timeout exceeded` and `network protocol error` as
+    non-transient.
+  - `MotherDuckConnectionTest::test_motherduck_reports_no_support_for_persistent_vss_index`
+    — locks the capability-negotiation contract: MotherDuck returns
+    false for `CAP_VSS_PERSISTENT_INDEX` and for unknown capability
+    tokens.
+
+### Notes
+
+- The PHPStan rule fires on 0 false positives against the current
+  codebase. Total errors after this release: **134**, down from 164
+  at 0.8.0. Every non-typing finding is fixed; the 134 remaining are
+  all `missingType.*` informational findings (level 6 strictness on
+  array generics + parameter / return types), tracked separately as
+  the path to PHPStan level 7.
+- MotherDuck users with `hnsw_enabled=true` will now see a clear admin
+  notice on first page load after the upgrade. The persistent flag is
+  populated lazily on the next `ensure_schema()` call (i.e. on the
+  first query or admin save after upgrade) — no schema migration is
+  required.
+- No new public option, no new top-level filter beyond
+  `mxchat_duckdb_use_prepared_statements` (default `true`). Safe
+  drop-in from 0.8.0.
 
 ---
 
