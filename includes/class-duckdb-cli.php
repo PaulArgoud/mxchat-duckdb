@@ -367,6 +367,57 @@ class MxChat_DuckDB_CLI {
             \WP_CLI::error($e->getMessage());
         }
     }
+
+    /**
+     * Manually trigger or step the MotherDuck → local mirror bootstrap.
+     *
+     * ## OPTIONS
+     *
+     * [--reset]
+     * : Wipe bootstrap state before starting. Useful after a drift event
+     *   or a failed run where you want to restart from scratch rather
+     *   than resume from the persisted offset.
+     *
+     * [--step]
+     * : Run a single Action-Scheduler tick inline (synchronous) instead
+     *   of enqueueing. Lets ops step through the pipeline interactively;
+     *   useful for debugging stuck bootstrap runs.
+     *
+     * ## EXAMPLES
+     *     wp mxchat-duckdb mirror-bootstrap            # enqueue first tick + return
+     *     wp mxchat-duckdb mirror-bootstrap --reset    # restart from offset 0
+     *     wp mxchat-duckdb mirror-bootstrap --step     # run one batch synchronously
+     */
+    public function mirror_bootstrap(array $args, array $assoc_args): void {
+        if (isset($assoc_args['reset'])) {
+            MxChat_DuckDB_Mirror_Bootstrap::reset_state();
+            \WP_CLI::log('Mirror bootstrap state cleared.');
+        }
+
+        if (isset($assoc_args['step'])) {
+            try {
+                $result = MxChat_DuckDB_Mirror_Bootstrap::instance()->tick();
+                \WP_CLI::log(sprintf(
+                    'status=%s processed=%d target=%s done=%s',
+                    $result['status'],
+                    $result['processed'],
+                    $result['target'] === null ? 'unknown' : (string) $result['target'],
+                    $result['done'] ? 'yes' : 'no'
+                ));
+                if (!empty($result['last_error'])) {
+                    \WP_CLI::warning('last_error: ' . $result['last_error']);
+                }
+            } catch (\Throwable $e) {
+                \WP_CLI::error($e->getMessage());
+            }
+            return;
+        }
+
+        if (!MxChat_DuckDB_Mirror_Bootstrap::start()) {
+            \WP_CLI::error('Cannot start: motherduck_mirror_enabled is off, or mode is not motherduck.');
+        }
+        \WP_CLI::success('Mirror bootstrap queued. Use --step to run a tick inline, or watch Action Scheduler for progress.');
+    }
 }
 
 \WP_CLI::add_command('mxchat-duckdb', 'MxChat_DuckDB_CLI');

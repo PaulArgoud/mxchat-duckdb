@@ -49,6 +49,10 @@ if (file_exists(MXCHAT_DUCKDB_DIR . 'vendor/autoload.php')) {
     require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-vector-store-schema.php';
     require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-vector-store-query.php';
     require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-vector-store.php';
+    // Mirror bootstrap relies on the trait + Vector_Store_Schema, so it
+    // has to load AFTER both. Sits next to the wrapper conceptually but
+    // the dependency order matters at parse time.
+    require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-mirror-bootstrap.php';
     // Ingestion pipelines: MySQL sync + WP post reprocessor + sync facade.
     require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-mysql-sync.php';
     require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-post-reprocessor.php';
@@ -108,6 +112,28 @@ class MxChat_DuckDB_Plugin {
 
         // Compactor: daily orphan-vector pruning.
         MxChat_DuckDB_Compactor::instance()->register_hooks();
+
+        // Mirror bootstrap: Action Scheduler worker that walks the
+        // MotherDuck → local copy in batches. Hook is registered
+        // unconditionally; the worker itself short-circuits when the
+        // mirror is disabled, so toggling on later doesn't need a
+        // plugin reload.
+        if (class_exists('MxChat_DuckDB_Mirror_Bootstrap')) {
+            MxChat_DuckDB_Mirror_Bootstrap::instance()->register_hooks();
+
+            // Trigger a bootstrap when the admin transitions the
+            // mirror toggle from off → on. Listening on update_option_*
+            // (which fires AFTER the option save) means we observe
+            // the post-sanitiser state, so a toggle that was rejected
+            // by the sanitiser doesn't accidentally fire.
+            add_action('update_option_' . MXCHAT_DUCKDB_OPTION_KEY, function ($old, $new) {
+                $was = is_array($old) && !empty($old['motherduck_mirror_enabled']);
+                $now = is_array($new) && !empty($new['motherduck_mirror_enabled']);
+                if (!$was && $now) {
+                    MxChat_DuckDB_Mirror_Bootstrap::start();
+                }
+            }, 10, 2);
+        }
 
         if (is_admin()) {
             MxChat_DuckDB_Admin::instance()->register_hooks();
