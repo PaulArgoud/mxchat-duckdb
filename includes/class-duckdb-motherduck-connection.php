@@ -74,4 +74,21 @@ class MxChat_DuckDB_MotherDuck_Connection extends MxChat_DuckDB_Embedded_Connect
     public function identifier(): string {
         return 'motherduck:' . $this->md_database . ($this->use_extension ? ' (ext)' : ' (cli)');
     }
+
+    /**
+     * MotherDuck cloud-side capability gaps versus a local DuckDB
+     * (see https://motherduck.com/docs/concepts/duckdb-extensions/).
+     * Falls back to the local-DuckDB defaults for anything we don't
+     * explicitly override here.
+     */
+    public function supports_capability(string $capability): bool {
+        switch ($capability) {
+            case self::CAP_VSS_PERSISTENT_INDEX:
+                // VSS is not supported on MotherDuck cloud tables.
+                // Queries fall back to brute-force scans.
+                return false;
+            default:
+                return parent::supports_capability($capability);
+        }
+    }
 }

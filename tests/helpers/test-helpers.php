@@ -151,5 +151,18 @@ if (!class_exists('MxChat_Test_RecordingConnection')) {
         public function identifier(): string {
             return $this->identifier;
         }
+
+        /** @var array<string,bool> capability overrides set by individual tests */
+        public array $capabilities = [];
+
+        public function supports_capability(string $capability): bool {
+            if (array_key_exists($capability, $this->capabilities)) {
+                return $this->capabilities[$capability];
+            }
+            // Default: pretend to be a full-featured local backend, so
+            // tests that don't care about capability nuances get the
+            // path they expect (VSS available, HNSW DDL fires, …).
+            return $capability === MxChat_DuckDB_Connection::CAP_VSS_PERSISTENT_INDEX;
+        }
     }
 }

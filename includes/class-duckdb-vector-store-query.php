@@ -61,7 +61,7 @@ class MxChat_DuckDB_Vector_Store_Query {
         }
 
         $start = microtime(true);
-        $where_parts = $this->build_where($bot_id, $filter);
+        [$where_parts, $where_params] = $this->build_where($bot_id, $filter);
 
         $dedup_on = !empty($opts['dedup_per_source']);
         $query_text = (string) apply_filters('mxchat_duckdb_query_text', '', $bot_id, $filter);
@@ -73,7 +73,7 @@ class MxChat_DuckDB_Vector_Store_Query {
             // where DuckDB can do it inside a single CTE without breaking
             // HNSW push-down.)
             $fetch_k = $dedup_on ? max($top_k * 3, $top_k + 10) : $top_k;
-            $matches = $this->query_hybrid($embedding, $query_text, $fetch_k, $where_parts, (float) $opts['hybrid_alpha']);
+            $matches = $this->query_hybrid($embedding, $query_text, $fetch_k, $where_parts, $where_params, (float) $opts['hybrid_alpha']);
             if ($dedup_on) {
                 $matches = self::dedup_per_source($matches, $top_k);
             }
@@ -84,7 +84,7 @@ class MxChat_DuckDB_Vector_Store_Query {
             // "ORDER BY <distance>(col, lit) LIMIT k" shape so VSS can still
             // use the index; the outer wrapper picks the top row per source_url
             // (and lets empty-URL rows through, mirroring the PHP semantics).
-            $matches = $this->query_vector_only($embedding, $top_k, $where_parts, $dedup_on);
+            $matches = $this->query_vector_only($embedding, $top_k, $where_parts, $where_params, $dedup_on);
         }
 
         $matches = apply_filters('mxchat_duckdb_rerank_matches', $matches, $embedding, $bot_id, $filter, $query_text);
@@ -119,7 +119,7 @@ class MxChat_DuckDB_Vector_Store_Query {
      * past top_k (the over-fetch factor) so the outer dedup has enough
      * candidates to collapse same-URL chunks and still land top_k rows.
      */
-    private function query_vector_only(array $embedding, int $top_k, array $where_parts, bool $dedup_on = false): array {
+    private function query_vector_only(array $embedding, int $top_k, array $where_parts, array $where_params, bool $dedup_on = false): array {
         $score_expr = $this->score_expression($embedding);
         $table_q    = $this->quote_ident($this->table);
         $where_sql  = implode(' AND ', $where_parts);
@@ -141,7 +141,7 @@ class MxChat_DuckDB_Vector_Store_Query {
                  LIMIT %4$d',
                 $score_expr, $table_q, $where_sql, $top_k
             );
-            return self::rows_to_matches($this->conn->execute($sql));
+            return self::rows_to_matches($this->conn->execute($sql, $where_params));
         }
 
         // Dedup-aware variant: over-fetch ×3 in the inner HNSW-friendly query,
@@ -177,14 +177,20 @@ class MxChat_DuckDB_Vector_Store_Query {
              LIMIT %5$d',
             $score_expr, $table_q, $where_sql, $over_fetch, $top_k
         );
-        return self::rows_to_matches($this->conn->execute($sql));
+        return self::rows_to_matches($this->conn->execute($sql, $where_params));
     }
 
     /**
      * Hybrid BM25 + vector via min-max-normalised score blending. Over-fetches
      * top_k * 4 from each leg so the merge has enough signal.
+     *
+     * The BM25 leg is skipped (vector-only fallback) when the FTS extension
+     * is known unavailable for the current backend+table — either from a
+     * persistent flag written by Vector_Store_Schema::migration_v3_fts_index()
+     * or from a previous BM25 failure this request. Avoids one failing SQL
+     * round-trip + an error_log entry per hybrid query on FTS-less builds.
      */
-    private function query_hybrid(array $embedding, string $query_text, int $top_k, array $where_parts, float $alpha): array {
+    private function query_hybrid(array $embedding, string $query_text, int $top_k, array $where_parts, array $where_params, float $alpha): array {
         $over = max($top_k * 4, 50);
         $where_sql = implode(' AND ', $where_parts);
 
@@ -196,25 +202,40 @@ class MxChat_DuckDB_Vector_Store_Query {
             $this->quote_ident($this->table),
             $where_sql,
             $over
-        ));
+        ), $where_params);
 
+        if (!$this->fts_available_for_request()) {
+            return self::rows_to_matches(array_slice($vector_rows, 0, $top_k));
+        }
+
+        // BM25 SQL: the user-controllable query_text moves from
+        // literal_string-inlined to a bound ? parameter so the
+        // prepared-statement path can take over on the native extension.
+        // The same ? is used twice (SELECT projection + WHERE filter), so
+        // we bind it twice — followed by the shared where_params.
         $bm25_rows = [];
         try {
-            $bm25_rows = $this->conn->execute(sprintf(
+            $sql_table_unquoted = preg_replace('/[^a-zA-Z0-9_]/', '', $this->table);
+            $bm25_sql = sprintf(
                 "SELECT vector_id AS id,
-                        fts_main_%1\$s.match_bm25(vector_id, %2\$s) AS score
-                 FROM %3\$s
-                 WHERE %4\$s
-                   AND fts_main_%1\$s.match_bm25(vector_id, %2\$s) IS NOT NULL
-                 ORDER BY score DESC LIMIT %5\$d",
-                preg_replace('/[^a-zA-Z0-9_]/', '', $this->table),
-                $this->literal_string($query_text),
+                        fts_main_%1\$s.match_bm25(vector_id, ?) AS score
+                 FROM %2\$s
+                 WHERE %3\$s
+                   AND fts_main_%1\$s.match_bm25(vector_id, ?) IS NOT NULL
+                 ORDER BY score DESC LIMIT %4\$d",
+                $sql_table_unquoted,
                 $this->quote_ident($this->table),
                 $where_sql,
                 $over
-            ));
+            );
+            $bm25_params = array_merge([$query_text], $where_params, [$query_text]);
+            // ⚠ argument order matches placeholder order: first ? = SELECT
+            // projection, then where_params for the WHERE clause, then the
+            // second ? for the AND ... IS NOT NULL clause.
+            $bm25_rows = $this->conn->execute($bm25_sql, $bm25_params);
         } catch (\Throwable $e) {
-            error_log('[mxchat-duckdb] BM25 path failed, falling back to vector-only: ' . $e->getMessage());
+            self::mark_fts_unavailable_for_request($this->conn->identifier(), $this->table);
+            error_log('[mxchat-duckdb] BM25 path failed, caching FTS as unavailable for this request: ' . $e->getMessage());
             return self::rows_to_matches(array_slice($vector_rows, 0, $top_k));
         }
 
@@ -262,20 +283,33 @@ class MxChat_DuckDB_Vector_Store_Query {
         }
     }
 
+    /**
+     * Build the WHERE-clause pieces for the read path. Both the bot_id
+     * literal and any compiled-filter values become bound `?` parameters
+     * — the SQL string holds placeholders only, and the params array
+     * carries the actual values in placeholder order.
+     *
+     * @return array{0: string[], 1: array<int,scalar|null>}
+     */
     private function build_where(string $bot_id, array $filter): array {
-        $parts = ['bot_id = ' . $this->literal_string($bot_id)];
-        foreach (self::compile_filter($filter, $this) as $sql) {
-            $parts[] = $sql;
-        }
-        return $parts;
+        $parts  = ['bot_id = ?'];
+        $params = [$bot_id];
+        [$filter_parts, $filter_params] = self::compile_filter($filter, $this);
+        foreach ($filter_parts as $p) $parts[] = $p;
+        foreach ($filter_params as $v) $params[] = $v;
+        return [$parts, $params];
     }
 
     /**
-     * Compile a Pinecone-style filter dict into SQL fragments. Supported
-     * operators per field: $eq, $ne, $in, $nin, $gte, $gt, $lte, $lt.
+     * Compile a Pinecone-style filter dict into a (fragments, params) pair.
+     * Fragments are SQL clauses with `?` placeholders; the corresponding
+     * values are returned in the params array in the same left-to-right
+     * order, ready to be appended to a connection->execute() call.
+     *
+     * Supported operators per field: $eq, $ne, $in, $nin, $gte, $gt, $lte, $lt.
      * Unknown fields/operators are silently dropped (Pinecone parity).
      *
-     * @return string[]
+     * @return array{0: string[], 1: array<int,scalar|null>}
      */
     public static function compile_filter(array $filter, MxChat_DuckDB_Vector_Store_Query $store): array {
         $allowed_fields = [
@@ -286,7 +320,8 @@ class MxChat_DuckDB_Vector_Store_Query {
             'chunk_index'      => 'chunk_index',
         ];
 
-        $out = [];
+        $fragments = [];
+        $params    = [];
         foreach ($filter as $field => $ops) {
             if (!isset($allowed_fields[$field]) || !is_array($ops)) {
                 self::log_ignored_filter('field', (string) $field);
@@ -295,24 +330,77 @@ class MxChat_DuckDB_Vector_Store_Query {
             $col = $allowed_fields[$field];
             foreach ($ops as $op => $val) {
                 switch ($op) {
-                    case '$eq':  $out[] = $col . ' = '  . $store->literal_for($val); break;
-                    case '$ne':  $out[] = $col . ' <> ' . $store->literal_for($val); break;
-                    case '$gt':  $out[] = $col . ' > '  . $store->literal_for($val); break;
-                    case '$gte': $out[] = $col . ' >= ' . $store->literal_for($val); break;
-                    case '$lt':  $out[] = $col . ' < '  . $store->literal_for($val); break;
-                    case '$lte': $out[] = $col . ' <= ' . $store->literal_for($val); break;
+                    case '$eq':  $fragments[] = $col . ' = ?';  $params[] = $val; break;
+                    case '$ne':  $fragments[] = $col . ' <> ?'; $params[] = $val; break;
+                    case '$gt':  $fragments[] = $col . ' > ?';  $params[] = $val; break;
+                    case '$gte': $fragments[] = $col . ' >= ?'; $params[] = $val; break;
+                    case '$lt':  $fragments[] = $col . ' < ?';  $params[] = $val; break;
+                    case '$lte': $fragments[] = $col . ' <= ?'; $params[] = $val; break;
                     case '$in':
                     case '$nin':
                         if (!is_array($val) || empty($val)) break;
-                        $list = implode(',', array_map([$store, 'literal_for'], $val));
-                        $out[] = $col . ($op === '$in' ? ' IN ' : ' NOT IN ') . '(' . $list . ')';
+                        $placeholders = implode(',', array_fill(0, count($val), '?'));
+                        $fragments[] = $col . ($op === '$in' ? ' IN ' : ' NOT IN ') . '(' . $placeholders . ')';
+                        foreach ($val as $v) $params[] = $v;
                         break;
                     default:
                         self::log_ignored_filter('operator', $field . '.' . (string) $op);
                 }
             }
         }
-        return $out;
+        return [$fragments, $params];
+    }
+
+    /**
+     * Per-request memo of the FTS extension's availability per (backend|table).
+     * Three states: missing key = "not yet probed", true = "FTS works", false =
+     * "FTS unavailable, skip BM25 attempts for the rest of the request". The
+     * persistent decision lives in the meta table (written by Schema::migration_v3);
+     * this static is a per-request hot cache + a place to record runtime failures.
+     *
+     * @var array<string,bool>
+     */
+    private static array $fts_status = [];
+
+    private function fts_available_for_request(): bool {
+        $key = $this->conn->identifier() . '|' . $this->table;
+        if (array_key_exists($key, self::$fts_status)) {
+            return self::$fts_status[$key];
+        }
+
+        // No request-scope decision yet — consult the persistent flag the
+        // schema migration wrote. A missing flag (pre-v0.8.1 install at
+        // schema v3) means "unknown, try it once" → return true; the catch
+        // arm in query_hybrid will flip the static to false on failure.
+        try {
+            $rows = $this->conn->execute(sprintf(
+                'SELECT value FROM %s WHERE key = %s',
+                $this->quote_ident(MxChat_DuckDB_Vector_Store_Schema::META_TABLE),
+                $this->literal_string(MxChat_DuckDB_Vector_Store_Schema::META_KEY_FTS_AVAILABLE)
+            ));
+            if (isset($rows[0]['value'])) {
+                $available = ((string) $rows[0]['value']) === '1';
+                self::$fts_status[$key] = $available;
+                return $available;
+            }
+        } catch (\Throwable $e) {
+            // Meta table doesn't exist yet — Schema hasn't been ensured.
+            // Don't cache the "unknown" verdict; next call will re-probe.
+        }
+        return true;
+    }
+
+    public static function mark_fts_unavailable_for_request(string $conn_identifier, string $table): void {
+        self::$fts_status[$conn_identifier . '|' . $table] = false;
+    }
+
+    /**
+     * Test hook: drop the per-request FTS memo so a unit test can exercise
+     * either the "known unavailable" or "probe and discover" branches in
+     * isolation. Production code has no reason to call this.
+     */
+    public static function reset_fts_status_cache(): void {
+        self::$fts_status = [];
     }
 
     /**

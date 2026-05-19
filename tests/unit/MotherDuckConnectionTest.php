@@ -172,4 +172,30 @@ final class MotherDuckConnectionTest extends TestCase {
         };
         $this->assertStringContainsString("tok''with''quotes", $captured);
     }
+
+    // ─── Capability negotiation ───────────────────────────────────────────
+
+    public function test_motherduck_reports_no_support_for_persistent_vss_index(): void {
+        // The MotherDuck connection must answer false to the VSS
+        // capability — that's how Schema decides to skip the CREATE
+        // INDEX DDL. Embedded reports true; the contrast is what makes
+        // the schema migration adaptive.
+        $conn = new class(['motherduck_token' => 'tok', 'motherduck_database' => 'd']) extends MxChat_DuckDB_MotherDuck_Connection {
+            public function __construct(array $opts) {
+                // Skip the parent ctor — we don't want it to try INSTALL/
+                // LOAD against a real DuckDB process in a unit test.
+                $this->md_database = 'd';
+            }
+            protected string $md_database;
+        };
+
+        $this->assertFalse(
+            $conn->supports_capability(MxChat_DuckDB_Connection::CAP_VSS_PERSISTENT_INDEX),
+            'MotherDuck cloud must report no support for the persistent VSS index'
+        );
+        $this->assertFalse(
+            $conn->supports_capability('something.unknown'),
+            'unknown capability tokens must degrade to false (forward-compat)'
+        );
+    }
 }

@@ -27,6 +27,17 @@ class MxChat_DuckDB_Embedded_Connection implements MxChat_DuckDB_Connection {
     protected array $init_sql = [];
 
     /**
+     * Capability flags for the prepared-statement path on the native extension.
+     * Probed lazily on first call to execute() with non-empty params, and then
+     * frozen for the lifetime of this connection. `$prepare_method_name` holds
+     * the actual method to call (different bindings have used `preparedStatement`,
+     * `prepare`, …). Empty string means "no usable prepared API found, keep
+     * inlining literals."
+     */
+    protected ?bool $native_prepared_supported = null;
+    protected string $prepare_method_name = '';
+
+    /**
      * @param array    $opts      Plugin options. Optional 'db_path' overrides resolved path
      *                            (used by MotherDuck wrapper to request ':memory:').
      * @param string[] $init_sql  Statements executed at connect time / prepended to each CLI call.
@@ -63,8 +74,39 @@ class MxChat_DuckDB_Embedded_Connection implements MxChat_DuckDB_Connection {
     }
 
     public function execute(string $sql, array $params = []): array {
+        // Prepared-statement fast path: only meaningful on the native extension
+        // when the caller actually has parameters to bind. The CLI path can't
+        // do prepared statements (sessions are stateless), and an inline-only
+        // SQL string (params=[]) gains nothing from the round-trip. We also
+        // gate on a one-shot capability probe so older bindings without a
+        // usable prepared API fall back to the inline path transparently.
+        if (!empty($params) && $this->use_extension && $this->native
+            && $this->probe_prepared_support()) {
+            try {
+                return $this->execute_native_prepared($sql, $params);
+            } catch (\Throwable $e) {
+                // Distinguish: did the prepared API itself blow up (binding
+                // surface mismatch, FFI error), or did DuckDB reject the SQL?
+                // The latter would also fail in the inline path, so we don't
+                // mask it; the former should disable prepared for this
+                // connection and let the inline path try again.
+                if (self::looks_like_binding_failure($e)) {
+                    $this->native_prepared_supported = false;
+                    $this->prepare_method_name = '';
+                    // Fall through to the inline path so the caller still
+                    // gets their query executed.
+                } else {
+                    throw $e;
+                }
+            }
+        }
+
         $bound_sql = self::inline_params($sql, $params);
         return $this->execute_with_retry($bound_sql, $sql);
+    }
+
+    public function supports_prepared(): bool {
+        return $this->use_extension && $this->probe_prepared_support();
     }
 
     /**
@@ -102,16 +144,163 @@ class MxChat_DuckDB_Embedded_Connection implements MxChat_DuckDB_Connection {
         throw $last_error ?? new RuntimeException('execute_with_retry: exhausted attempts');
     }
 
-    private function execute_native(string $sql): array {
-        try {
-            $result = $this->native->query($sql);
-            $rows = [];
-            if (is_iterable($result)) {
-                foreach ($result as $row) {
-                    $rows[] = (array) $row;
+    /**
+     * One-shot capability probe for the native extension's prepared-statement
+     * API. Different DuckDB PHP bindings have used different method names
+     * (saturio/duckdb-php exposes `preparedStatement()`, PDO-style bindings
+     * use `prepare()`). We try them in order; the first one that lets us
+     * round-trip `SELECT ?` with a single bound int wins. The verdict is
+     * frozen on the instance, so callers pay this cost at most once per
+     * connection lifetime.
+     */
+    protected function probe_prepared_support(): bool {
+        if ($this->native_prepared_supported !== null) {
+            return $this->native_prepared_supported;
+        }
+        if (!$this->native) {
+            $this->native_prepared_supported = false;
+            return false;
+        }
+        // Allow a hard opt-out without recompiling — useful when a site owner
+        // sees binding-related errors and wants to force the inline path.
+        if (!apply_filters('mxchat_duckdb_use_prepared_statements', true)) {
+            $this->native_prepared_supported = false;
+            return false;
+        }
+
+        foreach (['preparedStatement', 'prepare'] as $method) {
+            if (!method_exists($this->native, $method)) continue;
+            try {
+                $stmt = $this->native->{$method}('SELECT ? AS ok');
+                if (!is_object($stmt) || !method_exists($stmt, 'execute')) {
+                    continue;
                 }
+                if (method_exists($stmt, 'bindParam')) {
+                    // saturio/duckdb-php: 1-based, named arg in newer versions
+                    // but positional call also works for the older ones.
+                    $stmt->bindParam(1, 1);
+                } elseif (method_exists($stmt, 'bind')) {
+                    $stmt->bind(1, 1);
+                } else {
+                    continue;
+                }
+                $result = $stmt->execute();
+                $rows = self::result_to_rows($result);
+                if (!empty($rows) && (int) ($rows[0]['ok'] ?? 0) === 1) {
+                    $this->native_prepared_supported = true;
+                    $this->prepare_method_name = $method;
+                    return true;
+                }
+            } catch (\Throwable $e) {
+                // Method exists but doesn't behave as expected — try the next one.
+            }
+        }
+        $this->native_prepared_supported = false;
+        return false;
+    }
+
+    /**
+     * Execute SQL with ? placeholders against the native extension's prepared
+     * statement API. Array params (embedding vectors) get inlined as DuckDB
+     * list literals *into the SQL string* before the prepare call — vector-
+     * shaped placeholders aren't reliably supported across binding versions,
+     * and the inlining is the same path as before. Scalars + strings get
+     * bound through the API where they get the parameter-typing benefits.
+     */
+    protected function execute_native_prepared(string $sql, array $params): array {
+        [$rewritten_sql, $bind_params] = self::split_array_params($sql, $params);
+
+        $stmt = $this->native->{$this->prepare_method_name}($rewritten_sql);
+        $bind = method_exists($stmt, 'bindParam') ? 'bindParam' : 'bind';
+        foreach ($bind_params as $i => $val) {
+            $stmt->{$bind}($i + 1, $val);
+        }
+        $result = $stmt->execute();
+        return self::result_to_rows($result);
+    }
+
+    /**
+     * Pre-process the param list: array-shaped params (vector embeddings) are
+     * inlined as DuckDB list literals into the SQL because the binding APIs
+     * don't reliably accept FLOAT[]. Scalars get returned in a re-indexed
+     * list to be bound via bindParam.
+     *
+     * @return array{0:string,1:array<int,scalar|null>}
+     */
+    private static function split_array_params(string $sql, array $params): array {
+        $bind = [];
+        $i = 0;
+        $rewritten = preg_replace_callback('/\?/', function () use (&$i, $params, &$bind) {
+            if (!array_key_exists($i, $params)) {
+                $i++;
+                return 'NULL';
+            }
+            $val = $params[$i++];
+            if (is_array($val)) {
+                return self::to_literal($val);
+            }
+            $bind[] = $val;
+            return '?';
+        }, $sql);
+        return [$rewritten, $bind];
+    }
+
+    /**
+     * Normalize a result returned by the native extension (either `query()`
+     * or a prepared statement's `execute()`) into an array of associative-
+     * array rows.
+     */
+    private static function result_to_rows($result): array {
+        $rows = [];
+        if (is_iterable($result)) {
+            foreach ($result as $row) {
+                $rows[] = (array) $row;
             }
             return $rows;
+        }
+        if (is_object($result)) {
+            // Some bindings expose a fetchAll() or rows() materialiser.
+            foreach (['rows', 'fetchAll'] as $m) {
+                if (method_exists($result, $m)) {
+                    $maybe = $result->{$m}();
+                    if (is_iterable($maybe)) {
+                        foreach ($maybe as $row) $rows[] = (array) $row;
+                        return $rows;
+                    }
+                }
+            }
+        }
+        return $rows;
+    }
+
+    /**
+     * Heuristic: distinguish "the binding API itself misbehaved" (recoverable
+     * by falling back to inline) from "DuckDB rejected the SQL" (not
+     * recoverable — caller needs to see the error). False positives here are
+     * fine: we'd just fall back to inline, where the same SQL error surfaces
+     * again. False negatives (treating a real query error as a binding error)
+     * would mask it on the first call but the inline path re-runs the SQL
+     * and re-throws.
+     */
+    private static function looks_like_binding_failure(\Throwable $e): bool {
+        $msg = strtolower($e->getMessage());
+        $needles = [
+            'bind',
+            'parameter',
+            'prepared statement',
+            'unsupported type',
+            'ffi',
+            'method',  // "Call to undefined method …::bindParam()"
+        ];
+        foreach ($needles as $n) {
+            if (str_contains($msg, $n)) return true;
+        }
+        return $e instanceof \Error; // TypeError / ArgumentCountError on the API itself
+    }
+
+    private function execute_native(string $sql): array {
+        try {
+            return self::result_to_rows($this->native->query($sql));
         } catch (\Throwable $e) {
             throw new RuntimeException(
                 __('DuckDB native extension error: ', 'mxchat-duckdb') . $e->getMessage()
@@ -132,15 +321,97 @@ class MxChat_DuckDB_Embedded_Connection implements MxChat_DuckDB_Connection {
             || str_starts_with($first, 'EXPLAIN');
     }
 
+    /**
+     * Decide whether an exception is worth retrying. Three signals, in
+     * precedence order:
+     *
+     *   1. Exception class — known transient-class names from various
+     *      DuckDB / HTTP / PDO bindings. instanceof checks let us pin to
+     *      a type rather than a substring, which is locale- and version-
+     *      stable.
+     *   2. HTTP-shaped status code on getCode() — 502/503/504/429 are
+     *      always transient regardless of the wording on the message.
+     *   3. Substring fallback — kept for bindings that flatten everything
+     *      to RuntimeException("…"). Anchored on multi-word phrases so a
+     *      benign message containing "network protocol error" doesn't
+     *      mis-classify a logic error as retryable.
+     *
+     * False positives here are the dangerous direction (we'd retry an
+     * INSERT that may have already landed on the remote), so we err
+     * "don't retry". The caller's `looks_idempotent()` guard already
+     * blocks retries on non-SELECT anyway, but defense in depth.
+     */
     private static function is_transient_error(\Throwable $e): bool {
+        // Signal 1: exception type. Different DuckDB PHP bindings + curl
+        // wrappers expose different transient hierarchies; we match the
+        // ones documented at the time of writing and stay tolerant of
+        // missing types via class_exists + is_a.
+        $transient_classes = [
+            'DuckDB\\Exception\\NetworkException',
+            'DuckDB\\Exception\\TimeoutException',
+            'Saturio\\DuckDB\\Exception\\ConnectionException',
+        ];
+        foreach ($transient_classes as $cls) {
+            if (class_exists($cls, false) && is_a($e, $cls)) return true;
+        }
+        // PDOException needs SQLSTATE-aware filtering — only 08xxx
+        // (connection exception) and 40001 (serialization failure) are
+        // worth retrying; integrity errors (23000), syntax errors, etc.
+        // are caller bugs that retries can't fix.
+        if (class_exists('PDOException', false) && is_a($e, 'PDOException')) {
+            $sqlstate = self::pdo_sqlstate($e);
+            if ($sqlstate !== '' && (str_starts_with($sqlstate, '08') || $sqlstate === '40001')) {
+                return true;
+            }
+        }
+
+        // Signal 2: HTTP-shaped status code on getCode(). PECL bindings
+        // that wrap an HTTP transport often surface the upstream status
+        // here; 5xx + 429 are retryable.
+        $code = $e->getCode();
+        if (is_int($code) && ($code === 429 || ($code >= 500 && $code <= 599))) {
+            return true;
+        }
+
+        // Signal 3: substring fallback. Multi-word anchors only — bare
+        // "network" or "timeout" can appear in user-facing copy and
+        // would mis-classify a logic error as transient.
         $msg = strtolower($e->getMessage());
-        $needles = ['timeout', 'temporarily', 'connection reset', 'connection refused',
-                    'could not connect', 'eof', 'broken pipe', '503', '502', 'rate limit',
-                    'network', 'tls handshake'];
-        foreach ($needles as $n) {
-            if (str_contains($msg, $n)) return true;
+        $anchors = [
+            'connection reset',
+            'connection refused',
+            'connection timed out',
+            'could not connect',
+            'broken pipe',
+            'tls handshake',
+            'rate limit',
+            'service unavailable',     // 503 in words
+            'bad gateway',             // 502 in words
+            'gateway timeout',         // 504 in words
+            'temporarily unavailable',
+            'try again later',
+            'eof from server',
+            'read timeout',            // network-side read deadline
+            'request timeout',         // HTTP request timed out upstream
+            'host unreachable',
+            'network is unreachable',
+        ];
+        foreach ($anchors as $phrase) {
+            if (str_contains($msg, $phrase)) return true;
         }
         return false;
+    }
+
+    /**
+     * PDOException's SQLSTATE lives at errorInfo[0]. The exception may
+     * not have been initialised by PDO (someone re-threw it), so we
+     * tolerate the field being absent or empty.
+     */
+    private static function pdo_sqlstate(\Throwable $e): string {
+        if (!property_exists($e, 'errorInfo')) return '';
+        $info = $e->errorInfo ?? null;
+        if (!is_array($info) || !isset($info[0])) return '';
+        return (string) $info[0];
     }
 
     public function ping(): bool {
@@ -154,6 +425,21 @@ class MxChat_DuckDB_Embedded_Connection implements MxChat_DuckDB_Connection {
 
     public function identifier(): string {
         return 'embedded:' . $this->db_path . ($this->use_extension ? ' (ext)' : ' (cli)');
+    }
+
+    /**
+     * Local DuckDB supports the full DuckDB feature set, including the
+     * VSS extension. MotherDuck overrides this for capabilities that
+     * don't hold cloud-side.
+     */
+    public function supports_capability(string $capability): bool {
+        switch ($capability) {
+            case self::CAP_VSS_PERSISTENT_INDEX:
+                return true;
+            default:
+                // Forward-compat: unknown tokens degrade to "not supported".
+                return false;
+        }
     }
 
     /**

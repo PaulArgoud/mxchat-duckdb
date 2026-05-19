@@ -264,6 +264,7 @@ final class MysqlSyncTest extends TestCase {
             }
             public function ping(): bool { return true; }
             public function identifier(): string { return 'mock:native'; }
+            public function supports_capability(string $cap): bool { return $cap === MxChat_DuckDB_Connection::CAP_VSS_PERSISTENT_INDEX; }
         };
         MxChat_Test_Helpers::inject_mock_connection($native_conn);
 
@@ -307,6 +308,7 @@ final class MysqlSyncTest extends TestCase {
             }
             public function ping(): bool { return true; }
             public function identifier(): string { return 'mock:native-nobot'; }
+            public function supports_capability(string $cap): bool { return $cap === MxChat_DuckDB_Connection::CAP_VSS_PERSISTENT_INDEX; }
         };
         MxChat_DuckDB_Connection_Factory::reset_cache();
         $r = new ReflectionProperty(MxChat_DuckDB_Connection_Factory::class, 'cache');
@@ -338,6 +340,7 @@ final class MysqlSyncTest extends TestCase {
             }
             public function ping(): bool { return true; }
             public function identifier(): string { return 'mock:native-bot'; }
+            public function supports_capability(string $cap): bool { return $cap === MxChat_DuckDB_Connection::CAP_VSS_PERSISTENT_INDEX; }
         };
         MxChat_DuckDB_Connection_Factory::reset_cache();
         $r = new ReflectionProperty(MxChat_DuckDB_Connection_Factory::class, 'cache');

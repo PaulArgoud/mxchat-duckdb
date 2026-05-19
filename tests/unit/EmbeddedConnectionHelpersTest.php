@@ -50,4 +50,27 @@ final class EmbeddedConnectionHelpersTest extends TestCase {
         $this->assertFalse(self::call('is_transient_error', [new RuntimeException('unknown column foo')]));
         $this->assertFalse(self::call('is_transient_error', [new RuntimeException('permission denied')]));
     }
+
+    public function test_is_transient_error_uses_http_status_code_signal(): void {
+        // PECL bindings that wrap HTTP transports surface the upstream
+        // status on getCode(); 5xx + 429 must be classified as transient
+        // regardless of the message content.
+        $this->assertTrue(self::call('is_transient_error', [new RuntimeException('upstream blew up', 503)]));
+        $this->assertTrue(self::call('is_transient_error', [new RuntimeException('rate ceiling', 429)]));
+        $this->assertTrue(self::call('is_transient_error', [new RuntimeException('gateway', 504)]));
+        // 4xx (other than 429) must NOT be transient — those are caller errors.
+        $this->assertFalse(self::call('is_transient_error', [new RuntimeException('bad request', 400)]));
+        $this->assertFalse(self::call('is_transient_error', [new RuntimeException('forbidden', 403)]));
+        $this->assertFalse(self::call('is_transient_error', [new RuntimeException('not found', 404)]));
+    }
+
+    public function test_is_transient_error_word_anchored_rejects_substring_traps(): void {
+        // The v0.6 implementation matched a bare "network" / "timeout".
+        // After the v0.9 tightening, a logic error whose message happens
+        // to contain those words in another context must NOT be retried.
+        $this->assertFalse(self::call('is_transient_error', [new RuntimeException('configured network protocol error')]),
+            'a logic-level network *protocol* error is not a transient connectivity issue');
+        $this->assertFalse(self::call('is_transient_error', [new RuntimeException('statement timeout exceeded')]),
+            'a query-level statement timeout is a config problem, not transient — retry will not help');
+    }
 }

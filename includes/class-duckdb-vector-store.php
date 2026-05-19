@@ -106,6 +106,8 @@ class MxChat_DuckDB_Vector_Store {
 
     public function ensure_schema(): void { $this->schema->ensure_schema(); }
     public function table_info(): ?array { return $this->schema->table_info(); }
+    public function hnsw_available(): ?bool { return $this->schema->hnsw_available(); }
+    public function fts_available(): ?bool { return $this->schema->fts_available(); }
 
     // ─── Query delegation ───────────────────────────────────────────────
 

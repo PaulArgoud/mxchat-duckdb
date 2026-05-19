@@ -16,9 +16,33 @@ if (!defined('ABSPATH')) {
 
 trait MxChat_DuckDB_SQL_Helpers_Trait {
 
+    /**
+     * Double-quote a DuckDB identifier (table/column name).
+     *
+     * Rejects identifiers containing characters outside `[a-zA-Z0-9_]` rather
+     * than silently stripping them: a typo like `"my-table"` previously became
+     * `"mytable"` and queries would hit a different (possibly non-existent)
+     * table without any error visible to the caller. The options sanitiser
+     * already enforces the same character class on `table_name` and
+     * `motherduck_database` at save time, so this throw should never fire in
+     * production — it exists to catch programmer error (someone calling
+     * quote_ident() with a user-supplied string that bypassed the sanitiser).
+     *
+     * Empty identifiers are also rejected for the same reason: an empty
+     * quoted string `""` is a SQL syntax error in some contexts and a
+     * collation pitfall in others.
+     *
+     * @throws InvalidArgumentException
+     */
     protected function quote_ident(string $ident): string {
-        $clean = preg_replace('/[^a-zA-Z0-9_]/', '', $ident);
-        return '"' . $clean . '"';
+        if ($ident === '' || preg_match('/[^a-zA-Z0-9_]/', $ident) === 1) {
+            throw new InvalidArgumentException(sprintf(
+                /* translators: %s = the offending identifier */
+                __('Refusing to quote unsafe identifier "%s". Identifiers must match /^[a-zA-Z0-9_]+$/. Did the value bypass the options sanitiser?', 'mxchat-duckdb'),
+                $ident
+            ));
+        }
+        return '"' . $ident . '"';
     }
 
     protected function literal_string(string $val): string {

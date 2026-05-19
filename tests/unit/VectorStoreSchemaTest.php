@@ -43,6 +43,7 @@ final class VectorStoreSchemaTest extends TestCase {
             }
             public function ping(): bool { return true; }
             public function identifier(): string { return 'mock:test'; }
+            public function supports_capability(string $cap): bool { return $cap === MxChat_DuckDB_Connection::CAP_VSS_PERSISTENT_INDEX; }
         };
     }
 
@@ -97,10 +98,15 @@ final class VectorStoreSchemaTest extends TestCase {
         $this->assertStringContainsString('ADD COLUMN IF NOT EXISTS updated_at', $log);
         $this->assertStringContainsString('create_fts_index', $log);
 
-        // Only two version stamps (v2, v3).
+        // Only two version stamps (v2, v3) — filtered to schema_version so
+        // the new fts_available flag (also written by v3) doesn't pollute
+        // the count. The fts_available marker has its own assertion below.
         $version_writes = array_filter($conn->log, fn($sql) =>
-            stripos($sql, 'INSERT OR REPLACE INTO "mxchat_duckdb_schema_meta"') !== false);
+            stripos($sql, 'INSERT OR REPLACE INTO "mxchat_duckdb_schema_meta"') !== false
+            && stripos($sql, 'schema_version') !== false);
         $this->assertCount(2, $version_writes);
+        $this->assertStringContainsString("'fts_available'", $log,
+            'migration v3 must persist the FTS availability flag so the read path can skip BM25 when missing');
     }
 
     public function test_install_already_at_target_runs_no_migration(): void {
@@ -176,6 +182,44 @@ final class VectorStoreSchemaTest extends TestCase {
         $log = implode("\n", $conn->log);
         $this->assertStringNotContainsString('USING HNSW', $log,
             'with hnsw=false the index DDL must not appear');
+        $this->assertStringContainsString("'hnsw_available'", $log,
+            'hnsw=false still records the verdict in meta so the admin UI knows queries are brute-force');
+    }
+
+    public function test_motherduck_backend_skips_hnsw_and_vss_install(): void {
+        // A connection that reports no support for the persistent VSS
+        // index (e.g. MotherDuck cloud, per
+        // https://motherduck.com/docs/concepts/duckdb-extensions/) must
+        // make the migration skip the INSTALL/LOAD round-trips and the
+        // CREATE INDEX entirely, and persist hnsw_available='0' so the
+        // admin UI + any introspection code know queries will be brute-force.
+        $conn = new class implements MxChat_DuckDB_Connection {
+            public array $log = [];
+            public function execute(string $sql, array $params = []): array {
+                $this->log[] = $sql;
+                return [];
+            }
+            public function ping(): bool { return true; }
+            public function identifier(): string { return 'motherduck:my_db (ext)'; }
+            public function supports_capability(string $cap): bool { return false; /* no VSS */ }
+        };
+
+        $schema = new MxChat_DuckDB_Vector_Store_Schema($conn, 'mxchat_vectors', 1536, 'cosine', true, 'float32');
+        $schema->ensure_schema();
+
+        $log = implode("\n", $conn->log);
+        $this->assertStringNotContainsString('INSTALL vss', $log,
+            'no-VSS backend → no point installing the extension that is unsupported');
+        $this->assertStringNotContainsString('USING HNSW', $log,
+            'no-VSS backend → the HNSW DDL would just fail or no-op silently, so we skip it cleanly');
+        $this->assertStringContainsString("'hnsw_available'", $log);
+        // hnsw_available must persist as '0' so a later read picks up the verdict.
+        $hnsw_writes = array_filter($conn->log, fn($sql) =>
+            stripos($sql, 'INSERT OR REPLACE INTO "mxchat_duckdb_schema_meta"') !== false
+            && stripos($sql, 'hnsw_available') !== false
+            && stripos($sql, "'0'") !== false);
+        $this->assertNotEmpty($hnsw_writes,
+            'hnsw_available must be stamped as "0" so the admin UI can show the brute-force fallback state');
     }
 
     public function test_hnsw_enabled_creates_index_with_matching_metric(): void {
@@ -216,6 +260,7 @@ final class VectorStoreSchemaTest extends TestCase {
             }
             public function ping(): bool { return true; }
             public function identifier(): string { return 'mock:throwing'; }
+            public function supports_capability(string $cap): bool { return $cap === MxChat_DuckDB_Connection::CAP_VSS_PERSISTENT_INDEX; }
         };
         $schema = new MxChat_DuckDB_Vector_Store_Schema($conn, 'mxchat_vectors', 1536, 'cosine', true, 'float32');
         $this->assertNull($schema->table_info());

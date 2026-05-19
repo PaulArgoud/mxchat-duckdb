@@ -22,14 +22,18 @@ final class VectorStoreQueryRunTest extends TestCase {
     private function makeRecordingConnection(array $rows_to_return = []): MxChat_DuckDB_Connection {
         return new class($rows_to_return) implements MxChat_DuckDB_Connection {
             public array $log = [];
+            /** @var array<int,array<int,mixed>> */
+            public array $params_log = [];
             public array $rows;
             public function __construct(array $rows) { $this->rows = $rows; }
             public function execute(string $sql, array $params = []): array {
                 $this->log[] = $sql;
+                $this->params_log[] = $params;
                 return $this->rows;
             }
             public function ping(): bool { return true; }
             public function identifier(): string { return 'mock:run'; }
+            public function supports_capability(string $cap): bool { return $cap === MxChat_DuckDB_Connection::CAP_VSS_PERSISTENT_INDEX; }
         };
     }
 
@@ -44,6 +48,9 @@ final class VectorStoreQueryRunTest extends TestCase {
         $r2 = new ReflectionProperty(MxChat_DuckDB_Vector_Store_Query::class, 'logged_ignored');
         $r2->setAccessible(true);
         $r2->setValue(null, []);
+        // Wipe FTS-availability memo so each hybrid test starts from a known
+        // "unknown, will probe" state instead of inheriting a sibling's verdict.
+        MxChat_DuckDB_Vector_Store_Query::reset_fts_status_cache();
     }
 
     private function makeQuery(array $opts_override = [], int $dim = 3, array $sql_rows = []): array {
@@ -140,6 +147,8 @@ final class VectorStoreQueryRunTest extends TestCase {
             'inner candidates LIMIT must over-fetch ×3 so the outer dedup has enough rows');
         $this->assertStringContainsString('LIMIT 10', $sql,
             'outer LIMIT must equal the requested top_k');
+        $this->assertStringContainsString('bot_id = ?', $sql,
+            'bot_id is bound, not inlined');
     }
 
     public function test_dedup_off_uses_plain_top_k_limit(): void {
@@ -152,6 +161,73 @@ final class VectorStoreQueryRunTest extends TestCase {
         $this->assertStringNotContainsString('WITH candidates AS', $sql,
             'dedup off → no CTE wrapper');
         $this->assertStringNotContainsString('ROW_NUMBER', $sql);
+    }
+
+    public function test_hybrid_path_skips_bm25_when_fts_marked_unavailable(): void {
+        // Pre-seed the static cache with "FTS unavailable for this backend".
+        // The hybrid path must run the vector leg, see the verdict, and
+        // return vector-only matches — without issuing a BM25 SELECT or
+        // emitting an error_log entry.
+        $GLOBALS['__test_filter_overrides']['mxchat_duckdb_query_text'] = 'a user query string';
+        try {
+            [$query, $conn] = $this->makeQuery(['hybrid_enabled' => true]);
+            MxChat_DuckDB_Vector_Store_Query::mark_fts_unavailable_for_request('mock:run', 'mxchat_vectors');
+
+            $query->run([0.1, 0.2, 0.3], 10, 'default', []);
+        } finally {
+            $GLOBALS['__test_filter_overrides'] = [];
+        }
+
+        $log = implode("\n", $conn->log);
+        $this->assertStringNotContainsString('match_bm25', $log,
+            'with FTS marked unavailable, the hybrid path must not issue a BM25 query');
+        $this->assertStringNotContainsString("'fts_available'", $log,
+            'and must not re-probe the meta table either (verdict is cached in the static)');
+    }
+
+    public function test_hybrid_path_consults_meta_table_when_status_unknown(): void {
+        // No pre-seeding: the first hybrid call must probe the persistent
+        // fts_available flag in the meta table before deciding whether to
+        // attempt BM25. We stub the probe to return '0' so the BM25 leg
+        // is skipped.
+        $rows_by_pattern = [
+            "key = 'fts_available'" => [['value' => '0']],
+        ];
+        $defaults = MxChat_DuckDB_Options::defaults();
+        update_option('mxchat_duckdb_options', array_merge($defaults, [
+            'embedding_dim'  => 3,
+            'hybrid_enabled' => true,
+        ]));
+
+        $conn = new class($rows_by_pattern) implements MxChat_DuckDB_Connection {
+            public array $log = [];
+            public array $patterns;
+            public function __construct(array $patterns) { $this->patterns = $patterns; }
+            public function execute(string $sql, array $params = []): array {
+                $this->log[] = $sql;
+                foreach ($this->patterns as $needle => $rows) {
+                    if (stripos($sql, $needle) !== false) return $rows;
+                }
+                return [];
+            }
+            public function ping(): bool { return true; }
+            public function identifier(): string { return 'mock:meta-probe'; }
+            public function supports_capability(string $cap): bool { return $cap === MxChat_DuckDB_Connection::CAP_VSS_PERSISTENT_INDEX; }
+        };
+        $query = new MxChat_DuckDB_Vector_Store_Query($conn, 'mxchat_vectors', 3, 'cosine', 'float32');
+
+        $GLOBALS['__test_filter_overrides']['mxchat_duckdb_query_text'] = 'q';
+        try {
+            $query->run([0.1, 0.2, 0.3], 10, 'default', []);
+        } finally {
+            $GLOBALS['__test_filter_overrides'] = [];
+        }
+
+        $log = implode("\n", $conn->log);
+        $this->assertStringContainsString("key = 'fts_available'", $log,
+            'on first hybrid call with unknown FTS status, the read path must consult the meta table');
+        $this->assertStringNotContainsString('match_bm25', $log,
+            'meta says FTS unavailable → BM25 leg must be skipped');
     }
 
     public function test_hybrid_path_still_uses_php_dedup_with_over_fetch(): void {
@@ -207,21 +283,25 @@ final class VectorStoreQueryRunTest extends TestCase {
         $query->run([0.1, 0.2, 0.3], 10, 'default', []);
 
         $sql = $conn->log[0] ?? '';
+        $params = $conn->params_log[0] ?? [];
         $this->assertStringContainsString('array_cosine_similarity', $sql,
             'default metric is cosine — SQL must use array_cosine_similarity');
         $this->assertStringContainsString('FROM "mxchat_vectors"', $sql);
-        $this->assertStringContainsString("bot_id = 'default'", $sql);
+        $this->assertStringContainsString('bot_id = ?', $sql, 'bot_id must be a bound placeholder, not inlined');
+        $this->assertSame(['default'], $params, 'the bot_id value travels through params, not SQL');
     }
 
-    public function test_bot_id_filter_is_injected_into_where(): void {
+    public function test_bot_id_filter_is_bound_as_parameter(): void {
         [$query, $conn] = $this->makeQuery();
         $query->run([0.1, 0.2, 0.3], 10, 'support_fr', []);
 
         $sql = $conn->log[0] ?? '';
-        $this->assertStringContainsString("bot_id = 'support_fr'", $sql);
+        $params = $conn->params_log[0] ?? [];
+        $this->assertStringContainsString('bot_id = ?', $sql);
+        $this->assertSame(['support_fr'], $params);
     }
 
-    public function test_pinecone_filter_is_compiled_into_where(): void {
+    public function test_pinecone_filter_compiles_to_placeholders_and_params(): void {
         [$query, $conn] = $this->makeQuery();
         $query->run([0.1, 0.2, 0.3], 10, 'default', [
             'type' => ['$eq' => 'post'],
@@ -229,8 +309,11 @@ final class VectorStoreQueryRunTest extends TestCase {
         ]);
 
         $sql = $conn->log[0] ?? '';
-        $this->assertStringContainsString("content_type = 'post'", $sql);
-        $this->assertStringContainsString('chunk_index >= 0', $sql);
+        $params = $conn->params_log[0] ?? [];
+        $this->assertStringContainsString('content_type = ?', $sql);
+        $this->assertStringContainsString('chunk_index >= ?', $sql);
+        // Param order: bot_id (default) → type=$eq → chunk_index=$gte
+        $this->assertSame(['default', 'post', 0], $params);
     }
 
     // ─── Metric branching ─────────────────────────────────────────────────

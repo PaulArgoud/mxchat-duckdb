@@ -22,11 +22,45 @@ class MxChat_DuckDB_Admin {
         add_action('admin_menu', [$this, 'register_menu']);
         add_action('admin_init', [$this, 'register_settings']);
         add_action('admin_enqueue_scripts', [$this, 'enqueue_assets']);
+        add_action('admin_notices', [$this, 'render_capability_notices']);
 
         add_action('wp_ajax_mxchat_duckdb_test_connection', [$this, 'ajax_test_connection']);
         add_action('wp_ajax_mxchat_duckdb_sync_now', [$this, 'ajax_sync_now']);
         add_action('wp_ajax_mxchat_duckdb_stats', [$this, 'ajax_stats']);
         add_action('wp_ajax_mxchat_duckdb_reprocess_batch', [$this, 'ajax_reprocess_batch']);
+    }
+
+    /**
+     * Surfaces backend-capability mismatches as admin notices on the
+     * plugin's own settings page. Today this is just the
+     * "MotherDuck + HNSW enabled but HNSW is unsupported cloud-side"
+     * combination, which the migration silently degraded; without this
+     * notice the user would think their toggle was effective. Scoped to
+     * the settings screen so we don't pollute every WP admin page.
+     */
+    public function render_capability_notices(): void {
+        if (!function_exists('get_current_screen')) return;
+        $screen = get_current_screen();
+        if (!$screen || strpos((string) $screen->id, self::MENU_SLUG) === false) return;
+
+        if (!current_user_can('manage_options')) return;
+
+        $opts = MxChat_DuckDB_Options::get();
+        if (empty($opts['enabled'])) return;
+        if (($opts['mode'] ?? '') !== 'motherduck') return;
+        if (empty($opts['hnsw_enabled'])) return;
+
+        // We surface the notice regardless of whether the schema has
+        // already been ensured, because the conclusion is the same:
+        // MotherDuck cloud will never give HNSW, and the user toggled
+        // the setting expecting acceleration.
+        echo '<div class="notice notice-warning"><p>';
+        echo '<strong>MxChat DuckDB</strong>: ';
+        echo esc_html__(
+            'HNSW indexing is enabled but you are running in MotherDuck mode, which does not support the VSS extension cloud-side. Queries will fall back to brute-force scans (fine under ~100k vectors, noticeably slower beyond that). Switch to "Embedded" mode for HNSW acceleration, or disable HNSW to silence this warning.',
+            'mxchat-duckdb'
+        );
+        echo '</p></div>';
     }
 
     public function register_menu(): void {

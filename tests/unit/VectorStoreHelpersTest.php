@@ -128,4 +128,55 @@ final class VectorStoreHelpersTest extends TestCase {
         $key = self::call('cache_key', [$emb, 1, 'x', []]);
         $this->assertStringStartsWith('mxd_q_', $key);
     }
+
+    // ─── quote_ident throw on mangle ─────────────────────────────────────
+
+    public function test_quote_ident_throws_on_unsafe_identifier(): void {
+        $dummy = new class implements MxChat_DuckDB_Connection {
+            public function execute(string $sql, array $params = []): array { return []; }
+            public function ping(): bool { return true; }
+            public function identifier(): string { return 'mock:trait'; }
+            public function supports_capability(string $cap): bool { return $cap === MxChat_DuckDB_Connection::CAP_VSS_PERSISTENT_INDEX; }
+        };
+        $query = new MxChat_DuckDB_Vector_Store_Query($dummy, 'safe_name', 3, 'cosine', 'float32');
+
+        $r = new ReflectionMethod(MxChat_DuckDB_Vector_Store_Query::class, 'quote_ident');
+        $r->setAccessible(true);
+
+        $this->expectException(InvalidArgumentException::class);
+        $this->expectExceptionMessageMatches('/unsafe identifier/i');
+        $r->invokeArgs($query, ['has-a-dash']);
+    }
+
+    public function test_quote_ident_throws_on_empty_identifier(): void {
+        $dummy = new class implements MxChat_DuckDB_Connection {
+            public function execute(string $sql, array $params = []): array { return []; }
+            public function ping(): bool { return true; }
+            public function identifier(): string { return 'mock:trait'; }
+            public function supports_capability(string $cap): bool { return $cap === MxChat_DuckDB_Connection::CAP_VSS_PERSISTENT_INDEX; }
+        };
+        $query = new MxChat_DuckDB_Vector_Store_Query($dummy, 'safe_name', 3, 'cosine', 'float32');
+
+        $r = new ReflectionMethod(MxChat_DuckDB_Vector_Store_Query::class, 'quote_ident');
+        $r->setAccessible(true);
+
+        $this->expectException(InvalidArgumentException::class);
+        $r->invokeArgs($query, ['']);
+    }
+
+    public function test_quote_ident_accepts_alphanumeric_underscore(): void {
+        $dummy = new class implements MxChat_DuckDB_Connection {
+            public function execute(string $sql, array $params = []): array { return []; }
+            public function ping(): bool { return true; }
+            public function identifier(): string { return 'mock:trait'; }
+            public function supports_capability(string $cap): bool { return $cap === MxChat_DuckDB_Connection::CAP_VSS_PERSISTENT_INDEX; }
+        };
+        $query = new MxChat_DuckDB_Vector_Store_Query($dummy, 'safe_name', 3, 'cosine', 'float32');
+
+        $r = new ReflectionMethod(MxChat_DuckDB_Vector_Store_Query::class, 'quote_ident');
+        $r->setAccessible(true);
+
+        $this->assertSame('"mxchat_vectors"', $r->invokeArgs($query, ['mxchat_vectors']));
+        $this->assertSame('"my_view_1234"', $r->invokeArgs($query, ['my_view_1234']));
+    }
 }
