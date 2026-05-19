@@ -51,7 +51,26 @@ class MxChat_DuckDB_Vector_Store {
     protected bool $hnsw;
     protected string $storage; // 'float32' | 'int8'
 
+    /**
+     * Primary-side schema. When the connection is a Mirrored wrapper,
+     * this is bound to the primary (MotherDuck) connection — it owns
+     * the schema_meta on the canonical side. When the connection is a
+     * plain Embedded / MotherDuck connection, this is the only schema.
+     */
     private MxChat_DuckDB_Vector_Store_Schema $schema;
+
+    /**
+     * Local-side schema, only constructed when the connection is a
+     * Mirrored wrapper. The mirror needs schema migrations applied to
+     * BOTH sides — per-side, because each side answers
+     * supports_capability() differently (primary refuses VSS, local
+     * supports it), so going through the wrapper's write-through would
+     * try to CREATE INDEX … USING HNSW on MotherDuck and throw before
+     * ever reaching local. Running the migration twice with separate
+     * Schema instances is the clean fix.
+     */
+    private ?MxChat_DuckDB_Vector_Store_Schema $local_schema = null;
+
     private MxChat_DuckDB_Vector_Store_Query $query;
 
     /** Per-request cached default instance, returned by current(). */
@@ -94,9 +113,25 @@ class MxChat_DuckDB_Vector_Store {
             ? $opts['embedding_storage']
             : 'float32';
 
-        $this->schema = new MxChat_DuckDB_Vector_Store_Schema(
-            $this->conn, $this->table, $this->dim, $this->metric, $this->hnsw, $this->storage
-        );
+        // Under mirror, the schema migration MUST run per-side so each
+        // side answers its own supports_capability() honestly (primary
+        // refuses VSS / HNSW, local supports it). Going through the
+        // wrapper's write-through would propagate the CREATE INDEX to
+        // primary and throw before ever reaching local.
+        if ($this->conn instanceof MxChat_DuckDB_Mirrored_Connection) {
+            $this->schema = new MxChat_DuckDB_Vector_Store_Schema(
+                $this->conn->primary_connection(),
+                $this->table, $this->dim, $this->metric, $this->hnsw, $this->storage
+            );
+            $this->local_schema = new MxChat_DuckDB_Vector_Store_Schema(
+                $this->conn->local_connection(),
+                $this->table, $this->dim, $this->metric, $this->hnsw, $this->storage
+            );
+        } else {
+            $this->schema = new MxChat_DuckDB_Vector_Store_Schema(
+                $this->conn, $this->table, $this->dim, $this->metric, $this->hnsw, $this->storage
+            );
+        }
         $this->query = new MxChat_DuckDB_Vector_Store_Query(
             $this->conn, $this->table, $this->dim, $this->metric, $this->storage
         );
@@ -104,10 +139,31 @@ class MxChat_DuckDB_Vector_Store {
 
     // ─── Schema delegation ──────────────────────────────────────────────
 
-    public function ensure_schema(): void { $this->schema->ensure_schema(); }
+    public function ensure_schema(): void {
+        $this->schema->ensure_schema();
+        // Apply the same migration set on the local side independently
+        // so each side's capability check is honoured (notably, HNSW
+        // gets created on local but skipped on MotherDuck primary).
+        $this->local_schema?->ensure_schema();
+    }
     public function table_info(): ?array { return $this->schema->table_info(); }
-    public function hnsw_available(): ?bool { return $this->schema->hnsw_available(); }
-    public function fts_available(): ?bool { return $this->schema->fts_available(); }
+
+    /**
+     * HNSW availability for the read path. Under mirror, reads come
+     * from local — so the relevant verdict is local's. Without mirror,
+     * the single primary schema is authoritative.
+     */
+    public function hnsw_available(): ?bool {
+        return $this->local_schema?->hnsw_available() ?? $this->schema->hnsw_available();
+    }
+
+    /**
+     * FTS availability for the hybrid (BM25 + vector) read path. Same
+     * rationale as hnsw_available(): read-side is local under mirror.
+     */
+    public function fts_available(): ?bool {
+        return $this->local_schema?->fts_available() ?? $this->schema->fts_available();
+    }
 
     // ─── Query delegation ───────────────────────────────────────────────
 

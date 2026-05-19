@@ -291,6 +291,104 @@ final class VectorStoreFacadeTest extends TestCase {
         $this->assertNotSame($a, $c, 'reset_current() must drop the singleton');
     }
 
+    // ─── Mirror: schema applies to both sides ─────────────────────────────
+
+    public function test_ensure_schema_under_mirror_runs_migrations_on_both_sides(): void {
+        // Construct a real Mirrored_Connection wrapping two recording
+        // mocks. Each side answers supports_capability() differently:
+        // primary refuses VSS (the MotherDuck contract), local accepts.
+        // Vector_Store::ensure_schema() must walk the migrations on
+        // BOTH so the CREATE INDEX … USING HNSW lands on local while
+        // primary's HNSW DDL is skipped (correctly) instead of throwing.
+        $primary = new class implements MxChat_DuckDB_Connection {
+            public array $log = [];
+            public function execute(string $sql, array $params = []): array {
+                $this->log[] = $sql;
+                if (stripos($sql, 'SELECT value FROM') !== false) return [];
+                return [];
+            }
+            public function ping(): bool { return true; }
+            public function identifier(): string { return 'mock:mirror-primary (motherduck)'; }
+            public function supports_capability(string $cap): bool { return false; /* MotherDuck refuses VSS */ }
+        };
+        $local = new class implements MxChat_DuckDB_Connection {
+            public array $log = [];
+            public function execute(string $sql, array $params = []): array {
+                $this->log[] = $sql;
+                if (stripos($sql, 'SELECT value FROM') !== false) return [];
+                return [];
+            }
+            public function ping(): bool { return true; }
+            public function identifier(): string { return 'mock:mirror-local (embedded)'; }
+            public function supports_capability(string $cap): bool { return $cap === MxChat_DuckDB_Connection::CAP_VSS_PERSISTENT_INDEX; }
+        };
+        $mirror = new MxChat_DuckDB_Mirrored_Connection($primary, $local);
+
+        // Wipe Schema's per-request memoisation so both ensure_schema()
+        // calls actually run their DDL.
+        $r = new ReflectionProperty(MxChat_DuckDB_Vector_Store_Schema::class, 'ensured');
+        $r->setAccessible(true);
+        $r->setValue(null, []);
+
+        update_option('mxchat_duckdb_options', array_merge(
+            MxChat_DuckDB_Options::defaults(),
+            ['hnsw_enabled' => true]
+        ));
+        $store = new MxChat_DuckDB_Vector_Store($mirror);
+        $store->ensure_schema();
+
+        $primary_log = implode("\n", $primary->log);
+        $local_log   = implode("\n", $local->log);
+
+        // Both sides see the base table CREATE.
+        $this->assertStringContainsString('CREATE TABLE IF NOT EXISTS "mxchat_vectors"', $primary_log,
+            'primary must get the base table DDL — schema_meta lives there too');
+        $this->assertStringContainsString('CREATE TABLE IF NOT EXISTS "mxchat_vectors"', $local_log,
+            'local must get the same base table DDL — INSERTs target it');
+
+        // HNSW DDL fires on local only, primary stays clean.
+        $this->assertStringNotContainsString('USING HNSW', $primary_log,
+            'primary (MotherDuck) refuses VSS via capability — HNSW DDL must not fire');
+        $this->assertStringContainsString('USING HNSW', $local_log,
+            'local supports VSS via capability — HNSW must be created on the read side');
+    }
+
+    public function test_hnsw_and_fts_available_read_from_local_when_mirrored(): void {
+        // The read path runs against local under mirror. Vector_Store's
+        // hnsw_available() / fts_available() accessors are read by the
+        // admin UI + /health endpoint; they must reflect the LOCAL
+        // verdict (true for HNSW) rather than primary's (false on MD).
+        $primary = new class implements MxChat_DuckDB_Connection {
+            public function execute(string $sql, array $params = []): array {
+                // primary reports hnsw_available='0' (MotherDuck refused).
+                if (stripos($sql, "key = 'hnsw_available'") !== false) return [['value' => '0']];
+                if (stripos($sql, "key = 'fts_available'")  !== false) return [['value' => '0']];
+                return [];
+            }
+            public function ping(): bool { return true; }
+            public function identifier(): string { return 'mock:mirror-primary'; }
+            public function supports_capability(string $cap): bool { return false; }
+        };
+        $local = new class implements MxChat_DuckDB_Connection {
+            public function execute(string $sql, array $params = []): array {
+                // local reports hnsw_available='1' + fts_available='1'.
+                if (stripos($sql, "key = 'hnsw_available'") !== false) return [['value' => '1']];
+                if (stripos($sql, "key = 'fts_available'")  !== false) return [['value' => '1']];
+                return [];
+            }
+            public function ping(): bool { return true; }
+            public function identifier(): string { return 'mock:mirror-local'; }
+            public function supports_capability(string $cap): bool { return $cap === MxChat_DuckDB_Connection::CAP_VSS_PERSISTENT_INDEX; }
+        };
+        $mirror = new MxChat_DuckDB_Mirrored_Connection($primary, $local);
+        $store = new MxChat_DuckDB_Vector_Store($mirror);
+
+        $this->assertTrue($store->hnsw_available(),
+            'mirror reads HNSW availability from local — that is where the index lives');
+        $this->assertTrue($store->fts_available(),
+            'mirror reads FTS availability from local — that is where BM25 runs');
+    }
+
     // ─── helper ───────────────────────────────────────────────────────────
 
     private static function firstMatching(array $log, string $needle): ?string {
