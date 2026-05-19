@@ -45,6 +45,7 @@ require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-quantization.php';
 require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-connection.php';
 require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-embedded-connection.php';
 require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-motherduck-connection.php';
+require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-mirrored-connection.php';
 require_once MXCHAT_DUCKDB_DIR . 'includes/trait-duckdb-sql-helpers.php';
 require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-vector-store-schema.php';
 require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-vector-store-query.php';

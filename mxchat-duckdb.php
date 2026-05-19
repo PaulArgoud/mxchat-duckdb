@@ -43,6 +43,7 @@ if (file_exists(MXCHAT_DUCKDB_DIR . 'vendor/autoload.php')) {
     require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-connection.php';
     require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-motherduck-connection.php';
     require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-embedded-connection.php';
+    require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-mirrored-connection.php';
     // Vector store: shared trait + schema/query split + orchestrator facade.
     require_once MXCHAT_DUCKDB_DIR . 'includes/trait-duckdb-sql-helpers.php';
     require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-vector-store-schema.php';
