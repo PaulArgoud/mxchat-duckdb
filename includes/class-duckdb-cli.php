@@ -418,6 +418,51 @@ class MxChat_DuckDB_CLI {
         }
         \WP_CLI::success('Mirror bootstrap queued. Use --step to run a tick inline, or watch Action Scheduler for progress.');
     }
+
+    /**
+     * Drain the mirror_pending queue (failed local writes) immediately
+     * instead of waiting for the next 5-minute Action Scheduler tick.
+     * Useful after diagnosing + fixing the underlying cause (disk
+     * space, file permissions) to flush the backlog without delay.
+     *
+     * ## OPTIONS
+     *
+     * [--status]
+     * : Show pending + quarantine counts without running a drain.
+     *
+     * ## EXAMPLES
+     *     wp mxchat-duckdb mirror-drain
+     *     wp mxchat-duckdb mirror-drain --status
+     */
+    public function mirror_drain(array $args, array $assoc_args): void {
+        if (isset($assoc_args['status'])) {
+            $state = MxChat_DuckDB_Mirrored_Connection::pending_state();
+            \WP_CLI::log(sprintf(
+                'pending=%d quarantine=%d drained_total=%d quarantine_total=%d',
+                count($state['pending']),
+                count($state['quarantine']),
+                (int) $state['drained_total'],
+                (int) $state['quarantine_total']
+            ));
+            return;
+        }
+        try {
+            $result = MxChat_DuckDB_Mirror_Drain::instance()->run();
+        } catch (\Throwable $e) {
+            \WP_CLI::error($e->getMessage());
+        }
+        if (!empty($result['skipped'])) {
+            \WP_CLI::warning('Skipped: ' . ($result['reason'] ?? 'unknown'));
+            return;
+        }
+        \WP_CLI::success(sprintf(
+            'Drain: drained=%d retried=%d quarantined=%d remaining=%d',
+            $result['drained'],
+            $result['retried'],
+            $result['quarantined'],
+            $result['remaining']
+        ));
+    }
 }
 
 \WP_CLI::add_command('mxchat-duckdb', 'MxChat_DuckDB_CLI');

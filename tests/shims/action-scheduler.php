@@ -45,3 +45,32 @@ if (!function_exists('as_unschedule_all_actions')) {
         return $count;
     }
 }
+
+if (!function_exists('as_next_scheduled_action')) {
+    function as_next_scheduled_action($hook = '', $args = [], $group = '') {
+        $queue = $GLOBALS['__test_as_queue'] ?? [];
+        foreach ($queue as $a) {
+            if ($a['hook'] === $hook && $a['status'] === 'pending') {
+                return $a['scheduled_at'] ?? time();
+            }
+        }
+        return false;
+    }
+}
+
+if (!function_exists('as_schedule_recurring_action')) {
+    function as_schedule_recurring_action($timestamp, $interval, $hook, $args = [], $group = '') {
+        if (!isset($GLOBALS['__test_as_queue'])) $GLOBALS['__test_as_queue'] = [];
+        $id = count($GLOBALS['__test_as_queue']) + 1;
+        $GLOBALS['__test_as_queue'][$id] = [
+            'hook'         => $hook,
+            'args'         => $args,
+            'group'        => $group,
+            'status'       => 'pending',
+            'scheduled_at' => $timestamp,
+            'interval'     => $interval,
+            'recurring'    => true,
+        ];
+        return $id;
+    }
+}

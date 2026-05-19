@@ -149,4 +149,51 @@ final class HealthEndpointTest extends TestCase {
         $resp = $this->health->handle(new WP_REST_Request());
         $this->assertSame(extension_loaded('duckdb'), $resp->data['ext_loaded']);
     }
+
+    // ─── Mirror telemetry (v0.10.0+) ──────────────────────────────────────
+
+    public function test_mirror_telemetry_is_present_with_zero_counts_when_disabled(): void {
+        // Mirror always reports — disabled installs see zeros for every
+        // counter, which is what external dashboards expect (so the
+        // chart line stays at 0 instead of going missing).
+        $resp = $this->health->handle(new WP_REST_Request());
+
+        $this->assertArrayHasKey('mirror', $resp->data,
+            '/health must expose a mirror block once the v0.10.0+ classes are loaded');
+        $m = $resp->data['mirror'];
+        $this->assertFalse($m['enabled']);
+        $this->assertSame(MxChat_DuckDB_Mirror_Bootstrap::STATUS_DISABLED, $m['status']);
+        $this->assertSame(0, $m['pending_count']);
+        $this->assertSame(0, $m['quarantine_count']);
+        $this->assertSame(0, $m['drained_total']);
+        $this->assertSame(0, $m['quarantine_total']);
+    }
+
+    public function test_mirror_telemetry_reflects_pending_queue_and_status(): void {
+        update_option('mxchat_duckdb_options', array_merge(
+            MxChat_DuckDB_Options::defaults(),
+            ['enabled' => true, 'mode' => 'motherduck', 'motherduck_mirror_enabled' => true]
+        ));
+        update_option(MxChat_DuckDB_Mirror_Bootstrap::STATUS_OPTION, MxChat_DuckDB_Mirror_Bootstrap::STATUS_ACTIVE);
+        update_option(MxChat_DuckDB_Mirrored_Connection::PENDING_OPTION, [
+            'pending'          => [
+                ['sql' => 'X', 'params' => [], 'queued_at' => 0, 'retries' => 0, 'last_error' => ''],
+                ['sql' => 'Y', 'params' => [], 'queued_at' => 0, 'retries' => 3, 'last_error' => 'oops'],
+            ],
+            'quarantine'       => [
+                ['sql' => 'Z', 'params' => [], 'queued_at' => 0, 'retries' => 10, 'last_error' => 'stuck'],
+            ],
+            'drained_total'    => 42,
+            'quarantine_total' => 1,
+        ]);
+
+        $resp = $this->health->handle(new WP_REST_Request());
+        $m = $resp->data['mirror'];
+        $this->assertTrue($m['enabled']);
+        $this->assertSame(MxChat_DuckDB_Mirror_Bootstrap::STATUS_ACTIVE, $m['status']);
+        $this->assertSame(2,  $m['pending_count']);
+        $this->assertSame(1,  $m['quarantine_count']);
+        $this->assertSame(42, $m['drained_total']);
+        $this->assertSame(1,  $m['quarantine_total']);
+    }
 }

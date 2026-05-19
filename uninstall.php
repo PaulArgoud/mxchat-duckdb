@@ -68,6 +68,9 @@ function mxchat_duckdb_uninstall_cleanup_site(bool $delete_data): void {
     $custom_path = is_array($opts) && !empty($opts['embedded_path'])
         ? (string) $opts['embedded_path']
         : '';
+    $custom_mirror_path = is_array($opts) && !empty($opts['motherduck_mirror_path'])
+        ? (string) $opts['motherduck_mirror_path']
+        : '';
 
     // ── Options ─────────────────────────────────────────────────────────
     // Keep this list in sync with docs/CONFIGURATION.md → Sidecar options.
@@ -82,6 +85,10 @@ function mxchat_duckdb_uninstall_cleanup_site(bool $delete_data): void {
         'mxchat_duckdb_reprocess_state',            // Action Scheduler reprocess snapshot (v0.4.0+)
         'mxchat_duckdb_pinecone_migration_state',   // resumable Pinecone import token (v0.4.0+)
         'mxchat_duckdb_delete_data_on_uninstall',   // opt-in flag itself
+        'mxchat_duckdb_mirror_status',              // mirror lifecycle status (v0.10.0+)
+        'mxchat_duckdb_mirror_bootstrap_state',     // resumable mirror bootstrap state (v0.10.0+)
+        'mxchat_duckdb_mirror_pending',             // failed-local-write queue + quarantine (v0.10.0+)
+        'mxchat_duckdb_mirror_last_drift_check',    // drift-check timestamp (v0.10.0+)
     ];
     foreach ($sidecar_options as $opt) {
         delete_option($opt);
@@ -90,6 +97,12 @@ function mxchat_duckdb_uninstall_cleanup_site(bool $delete_data): void {
     // ── Scheduled cron ──────────────────────────────────────────────────
     wp_clear_scheduled_hook('mxchat_duckdb_incremental_sync');
     wp_clear_scheduled_hook('mxchat_duckdb_compact');
+    // Action-Scheduler-managed mirror work (v0.10.0+). Guarded
+    // because AS may not be loaded at uninstall time.
+    if (function_exists('as_unschedule_all_actions')) {
+        as_unschedule_all_actions('mxchat_duckdb_mirror_bootstrap_tick', [], 'mxchat-duckdb-mirror');
+        as_unschedule_all_actions('mxchat_duckdb_mirror_drain_tick',     [], 'mxchat-duckdb-mirror');
+    }
 
     // ── Named transient ─────────────────────────────────────────────────
     delete_transient('mxchat_duckdb_search_error');
@@ -113,10 +126,11 @@ function mxchat_duckdb_uninstall_cleanup_site(bool $delete_data): void {
     // ── Data directory: user-configured custom path (if any) ────────────
     // Only delete .duckdb-companion files within that file's parent dir, not
     // the whole parent (the user might have pointed us inside a shared dir).
-    if ($custom_path !== '' && file_exists($custom_path)) {
-        $custom_dir = dirname($custom_path);
-        $base = basename($custom_path);
-        @unlink($custom_path);
+    foreach ([$custom_path, $custom_mirror_path] as $configured_path) {
+        if ($configured_path === '' || !file_exists($configured_path)) continue;
+        $custom_dir = dirname($configured_path);
+        $base = basename($configured_path);
+        @unlink($configured_path);
         // DuckDB writes <name>.wal and may leave <name>.tmp lock files.
         foreach (['.wal', '.tmp', '.lock'] as $suffix) {
             $companion = $custom_dir . DIRECTORY_SEPARATOR . $base . $suffix;

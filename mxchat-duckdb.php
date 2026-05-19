@@ -53,6 +53,7 @@ if (file_exists(MXCHAT_DUCKDB_DIR . 'vendor/autoload.php')) {
     // has to load AFTER both. Sits next to the wrapper conceptually but
     // the dependency order matters at parse time.
     require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-mirror-bootstrap.php';
+    require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-mirror-drain.php';
     // Ingestion pipelines: MySQL sync + WP post reprocessor + sync facade.
     require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-mysql-sync.php';
     require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-post-reprocessor.php';
@@ -120,6 +121,15 @@ class MxChat_DuckDB_Plugin {
         // plugin reload.
         if (class_exists('MxChat_DuckDB_Mirror_Bootstrap')) {
             MxChat_DuckDB_Mirror_Bootstrap::instance()->register_hooks();
+
+            // Mirror drain: 5-min recurring Action Scheduler tick that
+            // replays failed local writes from `mirror_pending`. Always
+            // registered; the worker is a no-op when the mirror is
+            // disabled. The recurring schedule is created at most once
+            // (AS dedupes via the hook+group key).
+            if (class_exists('MxChat_DuckDB_Mirror_Drain')) {
+                MxChat_DuckDB_Mirror_Drain::instance()->register_hooks();
+            }
 
             // Trigger a bootstrap when the admin transitions the
             // mirror toggle from off → on. Listening on update_option_*
@@ -192,6 +202,17 @@ class MxChat_DuckDB_Plugin {
         // Stop scheduled work so nothing keeps firing against a disabled plugin.
         wp_clear_scheduled_hook(MxChat_DuckDB_Sync::CRON_HOOK);
         wp_clear_scheduled_hook(MxChat_DuckDB_Compactor::CRON_HOOK);
+
+        // Action-Scheduler-managed mirror work too. We catch the
+        // function_exists guards to keep this safe when the plugin is
+        // deactivated during a state where Action Scheduler isn't
+        // loaded yet (rare but possible on multisite cleanups).
+        if (function_exists('as_unschedule_all_actions') && class_exists('MxChat_DuckDB_Mirror_Drain')) {
+            as_unschedule_all_actions(MxChat_DuckDB_Mirror_Drain::ACTION_HOOK, [], MxChat_DuckDB_Mirror_Drain::ACTION_GROUP);
+        }
+        if (function_exists('as_unschedule_all_actions') && class_exists('MxChat_DuckDB_Mirror_Bootstrap')) {
+            as_unschedule_all_actions(MxChat_DuckDB_Mirror_Bootstrap::ACTION_HOOK, [], MxChat_DuckDB_Mirror_Bootstrap::ACTION_GROUP);
+        }
     }
 
     public static function mxchat_is_active() {

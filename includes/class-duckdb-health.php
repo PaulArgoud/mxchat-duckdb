@@ -49,6 +49,23 @@ class MxChat_DuckDB_Health {
             'last_error'     => (string) $opts['last_error'],
         ];
 
+        // Mirror telemetry. Always populated when the classes exist
+        // (test installs don't auto-load the mirror) so external
+        // monitors can chart pending/quarantine over time even on
+        // installs where the mirror is currently disabled — values
+        // are zero on disabled installs.
+        if (class_exists('MxChat_DuckDB_Mirror_Bootstrap') && class_exists('MxChat_DuckDB_Mirrored_Connection')) {
+            $pending_state = MxChat_DuckDB_Mirrored_Connection::pending_state();
+            $payload['mirror'] = [
+                'enabled'           => !empty($opts['motherduck_mirror_enabled']),
+                'status'            => MxChat_DuckDB_Mirror_Bootstrap::get_status(),
+                'pending_count'     => count($pending_state['pending']),
+                'quarantine_count'  => count($pending_state['quarantine']),
+                'drained_total'     => (int) $pending_state['drained_total'],
+                'quarantine_total'  => (int) $pending_state['quarantine_total'],
+            ];
+        }
+
         if (!$opts['enabled']) {
             $payload['ok'] = true;
             $payload['status'] = 'disabled';
