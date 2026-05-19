@@ -20,6 +20,11 @@ class MxChat_DuckDB_Options {
             'motherduck_database' => 'my_db',
             'embedded_path'       => '',                   // resolved at runtime if empty
             'embedded_binary'     => '',                   // path to duckdb CLI, empty = autodetect
+            // Local mirror for MotherDuck installs: shadows the cloud
+            // database to a local `.duckdb` file with HNSW so reads run
+            // fast. Only meaningful when `mode === 'motherduck'`.
+            'motherduck_mirror_enabled' => false,
+            'motherduck_mirror_path'    => '',             // resolved to uploads/.../mirror.duckdb when empty
             'table_name'          => 'mxchat_vectors',
             'embedding_dim'       => 1536,
             'distance_metric'     => 'cosine',
@@ -75,6 +80,34 @@ class MxChat_DuckDB_Options {
         return $path;
     }
 
+    public static function default_mirror_path(): string {
+        $upload = wp_upload_dir();
+        return trailingslashit($upload['basedir']) . 'mxchat-duckdb-private/mirror.duckdb';
+    }
+
+    /**
+     * Resolves the local-mirror `.duckdb` path the same way as
+     * `resolved_embedded_path()` — uses the configured value when set,
+     * falls back to `<uploads>/mxchat-duckdb-private/mirror.duckdb`,
+     * ensures the directory exists, and writes the HTTP blockers so
+     * the shadow database isn't web-reachable.
+     *
+     * Note the default sits next to the embedded path: this means an
+     * install that toggles between modes won't accumulate orphan
+     * directories. Site owners on shared hosts who keep the default
+     * pay one directory for everything we persist.
+     */
+    public static function resolved_mirror_path(): string {
+        $opts = self::get();
+        $path = !empty($opts['motherduck_mirror_path']) ? $opts['motherduck_mirror_path'] : self::default_mirror_path();
+        $dir = dirname($path);
+        if (!is_dir($dir)) {
+            wp_mkdir_p($dir);
+        }
+        self::write_directory_blockers($dir);
+        return $path;
+    }
+
     /**
      * Drop .htaccess + index.php + web.config in the data directory so the
      * .duckdb file (and any companion files) cannot be fetched over HTTP.
@@ -122,6 +155,26 @@ class MxChat_DuckDB_Options {
         if (empty($out['motherduck_database'])) $out['motherduck_database'] = 'my_db';
         $out['embedded_path']       = isset($input['embedded_path']) ? sanitize_text_field($input['embedded_path']) : '';
         $out['embedded_binary']     = isset($input['embedded_binary']) ? sanitize_text_field($input['embedded_binary']) : '';
+
+        // Mirror toggle — only meaningful when mode === 'motherduck'.
+        // We accept the input and then silently drop the toggle when
+        // it would have no effect, with a settings error so the admin
+        // understands why their checkbox didn't stick. The mirror path
+        // is sanitised regardless; switching back to MotherDuck later
+        // will pick up the existing value.
+        $out['motherduck_mirror_path']    = isset($input['motherduck_mirror_path']) ? sanitize_text_field($input['motherduck_mirror_path']) : '';
+        $mirror_requested = !empty($input['motherduck_mirror_enabled']);
+        if ($mirror_requested && $out['mode'] !== 'motherduck') {
+            add_settings_error(
+                MXCHAT_DUCKDB_OPTION_KEY,
+                'mirror_requires_motherduck_mode',
+                __('The MotherDuck local mirror only applies when the backend is set to MotherDuck. Toggle ignored.', 'mxchat-duckdb'),
+                'warning'
+            );
+            $out['motherduck_mirror_enabled'] = false;
+        } else {
+            $out['motherduck_mirror_enabled'] = $mirror_requested;
+        }
 
         // If the admin set a custom DuckDB CLI path, probe it. A non-duckdb
         // binary still gets saved (so a typo isn't blocked) but we surface a

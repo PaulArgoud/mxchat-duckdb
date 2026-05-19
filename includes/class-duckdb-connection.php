@@ -72,9 +72,25 @@ class MxChat_DuckDB_Connection_Factory {
         }
 
         $mode = $opts['mode'] ?? 'motherduck';
-        $conn = $mode === 'embedded'
+        $primary = $mode === 'embedded'
             ? new MxChat_DuckDB_Embedded_Connection($opts)
             : new MxChat_DuckDB_MotherDuck_Connection($opts);
+
+        // Wrap as Mirrored_Connection when (a) mode is motherduck, and
+        // (b) the user has explicitly enabled the local mirror. The
+        // sanitiser already rejects the toggle when mode != motherduck
+        // (with a settings error), so the second condition only fires
+        // on a consistent config — defence-in-depth here mirrors that.
+        $conn = $primary;
+        if ($mode === 'motherduck' && !empty($opts['motherduck_mirror_enabled'])
+            && class_exists('MxChat_DuckDB_Mirrored_Connection')) {
+            $mirror_opts = $opts;
+            $mirror_opts['db_path']  = !empty($opts['motherduck_mirror_path'])
+                ? (string) $opts['motherduck_mirror_path']
+                : MxChat_DuckDB_Options::resolved_mirror_path();
+            $local = new MxChat_DuckDB_Embedded_Connection($mirror_opts);
+            $conn = new MxChat_DuckDB_Mirrored_Connection($primary, $local);
+        }
 
         self::$cache[$key] = $conn;
         return $conn;
@@ -100,6 +116,12 @@ class MxChat_DuckDB_Connection_Factory {
             $opts['embedded_path'] ?? '',
             // Include the token's hash, not the token itself.
             isset($opts['motherduck_token']) ? substr(md5((string) $opts['motherduck_token']), 0, 8) : '',
+            // Mirror state is part of the cache key: toggling the
+            // mirror on/off without a fresh request would otherwise
+            // hand back a stale wrapper. The path participates too so
+            // changing it forces a rebuild of the local connection.
+            !empty($opts['motherduck_mirror_enabled']) ? '1' : '0',
+            $opts['motherduck_mirror_path'] ?? '',
         ];
         return implode('|', $fingerprint);
     }

@@ -210,4 +210,54 @@ final class OptionsSanitizeTest extends TestCase {
         $this->assertSame(1536, $out['embedding_dim']);
         $this->assertEmpty($GLOBALS['__test_settings_errors']);
     }
+
+    // ─── Mirror toggle ────────────────────────────────────────────────────
+
+    public function test_mirror_toggle_accepted_when_mode_is_motherduck(): void {
+        $out = $this->sanitize([
+            'mode'                       => 'motherduck',
+            'motherduck_mirror_enabled'  => '1',
+            'motherduck_mirror_path'     => '/var/lib/mxchat/mirror.duckdb',
+        ]);
+        $this->assertTrue($out['motherduck_mirror_enabled']);
+        $this->assertSame('/var/lib/mxchat/mirror.duckdb', $out['motherduck_mirror_path']);
+        $this->assertEmpty($GLOBALS['__test_settings_errors']);
+    }
+
+    public function test_mirror_toggle_rejected_with_warning_when_mode_is_embedded(): void {
+        // The mirror only makes sense for cloud mode — toggling it on
+        // for the embedded backend would mean mirroring a local file
+        // to itself. Silently drop with a visible settings_error.
+        $out = $this->sanitize([
+            'mode'                       => 'embedded',
+            'motherduck_mirror_enabled'  => '1',
+        ]);
+        $this->assertFalse($out['motherduck_mirror_enabled'],
+            'mirror toggle must be silently dropped on embedded mode');
+        $this->assertNotEmpty($GLOBALS['__test_settings_errors'],
+            'admin gets a settings_error so the dropped toggle is visible');
+        $error_code = $GLOBALS['__test_settings_errors'][0]['code'] ?? '';
+        $this->assertSame('mirror_requires_motherduck_mode', $error_code);
+    }
+
+    public function test_mirror_path_persists_even_when_toggle_is_dropped(): void {
+        // If the user typed a path before switching to embedded mode,
+        // we keep the path so switching back to motherduck doesn't
+        // erase their input.
+        $out = $this->sanitize([
+            'mode'                       => 'embedded',
+            'motherduck_mirror_enabled'  => '1',
+            'motherduck_mirror_path'     => '/var/lib/mxchat/mirror.duckdb',
+        ]);
+        $this->assertFalse($out['motherduck_mirror_enabled']);
+        $this->assertSame('/var/lib/mxchat/mirror.duckdb', $out['motherduck_mirror_path'],
+            'path value persists across mode-driven toggle drops');
+    }
+
+    public function test_mirror_default_off(): void {
+        // Empty input shouldn't enable the mirror — it's strictly opt-in.
+        $out = $this->sanitize([]);
+        $this->assertFalse($out['motherduck_mirror_enabled']);
+        $this->assertSame('', $out['motherduck_mirror_path']);
+    }
 }
