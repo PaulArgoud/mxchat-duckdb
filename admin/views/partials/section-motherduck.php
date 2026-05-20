@@ -28,4 +28,115 @@ if (!defined('ABSPATH')) { exit; }
                    value="<?php echo esc_attr($opts['motherduck_database'] ?? 'my_db'); ?>">
         </td>
     </tr>
+    <tr>
+        <th scope="row"><?php esc_html_e('Local mirror', 'mxchat-duckdb'); ?></th>
+        <td>
+            <label>
+                <input type="checkbox" id="motherduck_mirror_enabled"
+                       name="<?php echo esc_attr(MXCHAT_DUCKDB_OPTION_KEY); ?>[motherduck_mirror_enabled]"
+                       value="1" <?php checked(!empty($opts['motherduck_mirror_enabled'])); ?>>
+                <?php esc_html_e('Maintain a local DuckDB shadow with HNSW for fast reads (recommended for > 100k vectors)', 'mxchat-duckdb'); ?>
+            </label>
+            <p class="description">
+                <?php esc_html_e('When enabled, writes are mirrored to a local `.duckdb` file and queries run there for HNSW acceleration. MotherDuck remains the canonical store. The initial bootstrap runs in the background via Action Scheduler — watch the status panel below for progress.', 'mxchat-duckdb'); ?>
+            </p>
+
+            <?php if (class_exists('MxChat_DuckDB_Mirror_Bootstrap') && !empty($opts['motherduck_mirror_enabled'])) :
+                $status = MxChat_DuckDB_Mirror_Bootstrap::get_status();
+                $state  = MxChat_DuckDB_Mirror_Bootstrap::get_state();
+                $pending  = class_exists('MxChat_DuckDB_Mirrored_Connection') ? MxChat_DuckDB_Mirrored_Connection::pending_count()    : 0;
+                $quarant  = class_exists('MxChat_DuckDB_Mirrored_Connection') ? MxChat_DuckDB_Mirrored_Connection::quarantine_count() : 0;
+                $last_dc  = class_exists('MxChat_DuckDB_Mirror_Drift_Check')  ? MxChat_DuckDB_Mirror_Drift_Check::get_last_check_timestamp() : 0;
+
+                // Status pill colour — picked to match the existing wp-admin
+                // notice palette so the page stays visually consistent.
+                $status_colour = [
+                    'disabled'      => '#aaa',
+                    'bootstrapping' => '#dba617',  // amber
+                    'active'        => '#00a32a',  // green
+                    'drifted'       => '#dba617',
+                    'error'         => '#d63638',  // red
+                ][$status] ?? '#aaa';
+                ?>
+                <div class="mxchat-duckdb-mirror-status" style="margin-top: 12px; padding: 12px; background: #f6f7f7; border-left: 4px solid <?php echo esc_attr($status_colour); ?>;">
+                    <strong><?php esc_html_e('Mirror status:', 'mxchat-duckdb'); ?></strong>
+                    <code style="background: transparent;"><?php echo esc_html($status); ?></code>
+
+                    <?php if ($status === MxChat_DuckDB_Mirror_Bootstrap::STATUS_BOOTSTRAPPING && $state['target_count'] !== null) :
+                        $pct = $state['target_count'] > 0
+                            ? min(100, (int) round(100 * $state['processed_count'] / $state['target_count']))
+                            : 0;
+                        ?>
+                        <span style="margin-left: 12px;">
+                            <?php printf(
+                                /* translators: 1: processed rows, 2: target rows, 3: percentage */
+                                esc_html__('Progress: %1$d / %2$d (%3$d%%)', 'mxchat-duckdb'),
+                                (int) $state['processed_count'],
+                                (int) $state['target_count'],
+                                $pct
+                            ); ?>
+                        </span>
+                    <?php endif; ?>
+
+                    <?php if ($status === MxChat_DuckDB_Mirror_Bootstrap::STATUS_ERROR && !empty($state['last_error'])) : ?>
+                        <p style="margin: 6px 0 0; color: #d63638;">
+                            <?php esc_html_e('Last error:', 'mxchat-duckdb'); ?>
+                            <code style="background: transparent;"><?php echo esc_html($state['last_error']); ?></code>
+                        </p>
+                    <?php endif; ?>
+
+                    <?php if ($status === MxChat_DuckDB_Mirror_Bootstrap::STATUS_DRIFTED) : ?>
+                        <p style="margin: 6px 0 0;">
+                            <?php
+                            echo wp_kses_post(__(
+                                'Drift detected between MotherDuck and local. Run <code>wp mxchat-duckdb mirror-bootstrap --reset</code> to re-converge, or investigate via <code>wp mxchat-duckdb mirror-drift-check</code>.',
+                                'mxchat-duckdb'
+                            ));
+                            ?>
+                        </p>
+                    <?php endif; ?>
+
+                    <ul style="margin: 6px 0 0 0; padding: 0; list-style: none; font-size: 12px; color: #50575e;">
+                        <li>
+                            <?php printf(
+                                /* translators: %d = number of pending mirror writes */
+                                esc_html__('Pending writes queued: %d', 'mxchat-duckdb'),
+                                (int) $pending
+                            ); ?>
+                        </li>
+                        <li>
+                            <?php printf(
+                                /* translators: %d = number of quarantined entries */
+                                esc_html__('Quarantined entries: %d', 'mxchat-duckdb'),
+                                (int) $quarant
+                            ); ?>
+                        </li>
+                        <li>
+                            <?php if ($last_dc > 0) :
+                                printf(
+                                    /* translators: %s = number of seconds since the last drift check */
+                                    esc_html__('Last drift check: %s ago', 'mxchat-duckdb'),
+                                    esc_html(human_time_diff($last_dc))
+                                );
+                            else :
+                                esc_html_e('Last drift check: never (the daily cron has not run yet)', 'mxchat-duckdb');
+                            endif; ?>
+                        </li>
+                    </ul>
+                </div>
+            <?php endif; ?>
+        </td>
+    </tr>
+    <tr>
+        <th scope="row"><label for="motherduck_mirror_path"><?php esc_html_e('Mirror path', 'mxchat-duckdb'); ?></label></th>
+        <td>
+            <input type="text" id="motherduck_mirror_path" class="regular-text code"
+                   name="<?php echo esc_attr(MXCHAT_DUCKDB_OPTION_KEY); ?>[motherduck_mirror_path]"
+                   value="<?php echo esc_attr($opts['motherduck_mirror_path'] ?? ''); ?>"
+                   placeholder="<?php echo esc_attr(MxChat_DuckDB_Options::default_mirror_path()); ?>">
+            <p class="description">
+                <?php esc_html_e('Path to the local mirror `.duckdb` file. Leave empty for the default under uploads/mxchat-duckdb-private/. Point at a fast local disk if uploads/ is on a network mount.', 'mxchat-duckdb'); ?>
+            </p>
+        </td>
+    </tr>
 </table>

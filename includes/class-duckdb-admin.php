@@ -31,12 +31,17 @@ class MxChat_DuckDB_Admin {
     }
 
     /**
-     * Surfaces backend-capability mismatches as admin notices on the
-     * plugin's own settings page. Today this is just the
-     * "MotherDuck + HNSW enabled but HNSW is unsupported cloud-side"
-     * combination, which the migration silently degraded; without this
-     * notice the user would think their toggle was effective. Scoped to
+     * Surfaces backend-capability mismatches + mirror lifecycle events
+     * as admin notices on the plugin's own settings page. Scoped to
      * the settings screen so we don't pollute every WP admin page.
+     *
+     * Notices currently surfaced:
+     *   1. HNSW enabled + MotherDuck mode without the mirror — queries
+     *      fall back to brute-force; recommend enabling the mirror.
+     *   2. STATUS_DRIFTED — daily check found primary/local divergence;
+     *      recommend `wp mxchat-duckdb mirror-bootstrap --reset`.
+     *   3. STATUS_ERROR on bootstrap with a recent failure.
+     *   4. Quarantined entries in mirror_pending (stuck local writes).
      */
     public function render_capability_notices(): void {
         if (!function_exists('get_current_screen')) return;
@@ -47,20 +52,70 @@ class MxChat_DuckDB_Admin {
 
         $opts = MxChat_DuckDB_Options::get();
         if (empty($opts['enabled'])) return;
-        if (($opts['mode'] ?? '') !== 'motherduck') return;
-        if (empty($opts['hnsw_enabled'])) return;
 
-        // We surface the notice regardless of whether the schema has
-        // already been ensured, because the conclusion is the same:
-        // MotherDuck cloud will never give HNSW, and the user toggled
-        // the setting expecting acceleration.
-        echo '<div class="notice notice-warning"><p>';
-        echo '<strong>MxChat DuckDB</strong>: ';
-        echo esc_html__(
-            'HNSW indexing is enabled but you are running in MotherDuck mode, which does not support the VSS extension cloud-side. Queries will fall back to brute-force scans (fine under ~100k vectors, noticeably slower beyond that). Switch to "Embedded" mode for HNSW acceleration, or disable HNSW to silence this warning.',
-            'mxchat-duckdb'
-        );
-        echo '</p></div>';
+        // ── Notice 1: HNSW + MotherDuck without mirror ──────────────────
+        if (($opts['mode'] ?? '') === 'motherduck'
+            && !empty($opts['hnsw_enabled'])
+            && empty($opts['motherduck_mirror_enabled'])) {
+            echo '<div class="notice notice-warning"><p>';
+            echo '<strong>MxChat DuckDB</strong>: ';
+            echo wp_kses_post(__(
+                'HNSW indexing is enabled but you are running in MotherDuck mode without the local mirror. MotherDuck cloud does not support the VSS extension, so queries fall back to brute-force scans (fine under ~100k vectors, noticeably slower beyond that). <strong>Enable the local mirror</strong> to keep MotherDuck as the canonical store while getting HNSW acceleration locally, or switch to "Embedded" mode.',
+                'mxchat-duckdb'
+            ));
+            echo '</p></div>';
+        }
+
+        // ── Notices 2-4 are mirror-specific ─────────────────────────────
+        if (!class_exists('MxChat_DuckDB_Mirror_Bootstrap')) return;
+        if (empty($opts['motherduck_mirror_enabled'])) return;
+
+        $status = MxChat_DuckDB_Mirror_Bootstrap::get_status();
+
+        // Notice 2: drift detected by the daily check.
+        if ($status === MxChat_DuckDB_Mirror_Bootstrap::STATUS_DRIFTED) {
+            echo '<div class="notice notice-warning"><p>';
+            echo '<strong>MxChat DuckDB</strong>: ';
+            echo wp_kses_post(__(
+                'Mirror drift detected: MotherDuck and the local shadow disagree. Run <code>wp mxchat-duckdb mirror-drift-check</code> to see which bot_ids diverged, then <code>wp mxchat-duckdb mirror-bootstrap --reset</code> to re-converge.',
+                'mxchat-duckdb'
+            ));
+            echo '</p></div>';
+        }
+
+        // Notice 3: bootstrap stuck in error.
+        if ($status === MxChat_DuckDB_Mirror_Bootstrap::STATUS_ERROR) {
+            $state = MxChat_DuckDB_Mirror_Bootstrap::get_state();
+            $last_error = (string) ($state['last_error'] ?? '');
+            echo '<div class="notice notice-error"><p>';
+            echo '<strong>MxChat DuckDB</strong>: ';
+            echo esc_html__('Mirror bootstrap failed. Last error:', 'mxchat-duckdb');
+            echo ' <code>' . esc_html($last_error !== '' ? $last_error : '(none recorded)') . '</code>. ';
+            echo wp_kses_post(__(
+                'The Action Scheduler will retry automatically. To restart from scratch, run <code>wp mxchat-duckdb mirror-bootstrap --reset</code>.',
+                'mxchat-duckdb'
+            ));
+            echo '</p></div>';
+        }
+
+        // Notice 4: quarantined entries surfaced (stuck local writes).
+        if (class_exists('MxChat_DuckDB_Mirrored_Connection')) {
+            $q = MxChat_DuckDB_Mirrored_Connection::quarantine_count();
+            if ($q > 0) {
+                echo '<div class="notice notice-warning"><p>';
+                echo '<strong>MxChat DuckDB</strong>: ';
+                echo wp_kses_post(sprintf(
+                    /* translators: %d = number of quarantined mirror entries */
+                    __(
+                        '%d local mirror writes have failed %d+ times and were moved to quarantine. Inspect via <code>wp mxchat-duckdb mirror-drain --status</code>; usual root causes are disk-full or file-permission errors on the mirror path.',
+                        'mxchat-duckdb'
+                    ),
+                    $q,
+                    (int) MxChat_DuckDB_Mirrored_Connection::PENDING_RETRY_LIMIT
+                ));
+                echo '</p></div>';
+            }
+        }
     }
 
     public function register_menu(): void {
