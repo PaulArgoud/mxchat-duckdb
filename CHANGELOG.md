@@ -9,16 +9,19 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Planned
 
-- Local mirror for MotherDuck installs: maintain a local `.duckdb`
-  shadow with HNSW indexed for fast reads; write-through on
-  upsert/delete; bootstrap via Parquet dump. Cadred in a separate
-  design doc before implementation.
+- **Auto-reconciliation of drifted bot_ids**: when the daily drift
+  check detects a real divergence, queue a per-bot scoped re-bootstrap
+  instead of leaving the user to run `mirror-bootstrap --reset`
+  manually. Requires a new partial-bootstrap variant of the existing
+  full-table copy. (Detection landed in v0.10.0; auto-recovery is
+  the v0.11 cycle.)
 - Integration smoke test against a real DuckDB binary in CI (matrix
   job installs `duckdb`, runs ensure_schema + upsert + query
-  end-to-end).
+  end-to-end). Especially useful now that mirror logic has multiple
+  cron paths.
 - Mutation testing via Infection (informational CI job).
-- PHPStan level 7 (clean up the 134 remaining `missingType.*`
-  findings).
+- PHPStan level 7 (clean up the remaining `missingType.*` findings;
+  currently 172 at level 6).
 - Submit upstream patch (`mxchat_pre_vector_query` filter,
   WP-canonical `pre_*` convention) to mxchat-basic. The legacy
   `mxchat_pinecone_matches_override` hook stays registered for
@@ -26,6 +29,175 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - PDF / attachment reprocessing.
 - Per-bot configuration UI for multi-bot installs.
 - Built-in cross-encoder reranker (Cohere Rerank / BGE-reranker).
+
+---
+
+## [0.10.0] — 2026-05-20
+
+The headline feature for this cycle: a **local mirror for MotherDuck
+installs**. MotherDuck doesn't support the VSS extension cloud-side,
+so vector queries on MotherDuck-backed installs fall back to
+brute-force scans (workable to ~100k vectors, slow beyond). The
+mirror maintains a local `.duckdb` shadow with HNSW indexed.
+MotherDuck stays the canonical store; reads route to local for HNSW
+acceleration. Opt-in, fully transparent to callers, no public API
+break.
+
+Architecture is documented end-to-end in
+[docs/DESIGN-motherduck-mirror.md](docs/DESIGN-motherduck-mirror.md);
+operator guide in [docs/MIRROR.md](docs/MIRROR.md).
+
+### Added
+
+- **`MxChat_DuckDB_Mirrored_Connection`** — wraps a primary (MotherDuck)
+  + a local (Embedded) connection, implements the same
+  `MxChat_DuckDB_Connection` interface. Reads route to local; writes
+  go to primary first (canonical), then local (best-effort). On
+  local-side write failure the SQL is queued in
+  `mxchat_duckdb_mirror_pending`. On local-side read failure the
+  request falls back to primary for the rest of the request (per-
+  request stickiness flag). Hard cap PENDING_MAX_QUEUE = 5000 on the
+  pending queue to keep wp_options bounded.
+- **`MxChat_DuckDB_Mirror_Bootstrap`** — Action Scheduler worker that
+  populates the local shadow from MotherDuck in resumable batches.
+  Single local Embedded_Connection with an extra
+  `ATTACH 'md:<db>' AS md_remote` so the session sees both tables;
+  cursor-based pagination (`WHERE vector_id > <last_seen> ORDER BY
+  vector_id LIMIT N`) for stability + resumability. Five status
+  states: `disabled`, `bootstrapping`, `active`, `drifted`, `error`.
+- **`MxChat_DuckDB_Mirror_Drain`** — recurring 5-minute Action
+  Scheduler tick that replays failed local writes from
+  `mirror_pending`. Per-tick cap DRAIN_MAX_PER_TICK = 50 keeps a
+  stuck queue from monopolising the worker. Entries hitting
+  PENDING_RETRY_LIMIT (10) move to `quarantine` and surface in
+  /health + admin notice.
+- **`MxChat_DuckDB_Mirror_Drift_Check`** — daily Action Scheduler
+  tick that compares `(COUNT, md5(string_agg(vector_id ORDER BY)))`
+  per bot_id between primary and local. Real divergence flips status
+  to `drifted` and surfaces an admin notice; small differential
+  with pending entries is classified as "drainable" and the next
+  drain tick closes the gap without flipping status. Anchored at
+  +12h after activation to dodge the bootstrap pipeline's initial
+  tick race.
+- **New plugin options** in `mxchat_duckdb_options`:
+  `motherduck_mirror_enabled` (bool, default false),
+  `motherduck_mirror_path` (string, default empty → resolves to
+  `<uploads>/mxchat-duckdb-private/mirror.duckdb` with the same HTTP
+  blockers as `embedded_path`).
+- **Sidecar options** (separate `wp_options`):
+  `mxchat_duckdb_mirror_status`,
+  `mxchat_duckdb_mirror_bootstrap_state`,
+  `mxchat_duckdb_mirror_pending`,
+  `mxchat_duckdb_mirror_last_drift_check`. All cleaned up by
+  `uninstall.php`.
+- **Admin UI** in `admin/views/partials/section-motherduck.php`:
+  toggle, mirror-path field with placeholder showing the default,
+  live status panel (progress %, last error, pending/quarantine
+  counters, last drift check age) coloured by status state.
+- **Admin notices** in `MxChat_DuckDB_Admin::render_capability_notices()`:
+  HNSW + MotherDuck without mirror → recommend enabling the mirror;
+  `STATUS_DRIFTED` → recommend `wp mxchat-duckdb mirror-bootstrap
+  --reset`; `STATUS_ERROR` with last_error → surface for ops;
+  `quarantine_count > 0` → name the likely root causes.
+- **WP-CLI commands** (parallel to the cron flows):
+  `wp mxchat-duckdb mirror-bootstrap` (with `--reset` and `--step`),
+  `wp mxchat-duckdb mirror-drain` (with `--status`),
+  `wp mxchat-duckdb mirror-drift-check` (prints per-bot diff table).
+- **`/health` endpoint** gains a `mirror` block:
+  `{enabled, status, pending_count, quarantine_count, drained_total,
+  quarantine_total, last_drift_check_at, last_drift_check_age_s}`.
+  Always populated when the v0.10.0 classes exist — zeros on
+  disabled installs so external dashboards don't see a chart line
+  going missing.
+- **`Vector_Store::hnsw_available()`** / **`Vector_Store::fts_available()`**
+  read from the LOCAL schema when mirrored (that's where the read
+  path runs).
+- **`docs/MIRROR.md`** — operator guide: when to enable, what to
+  expect, status reference table, WP-CLI reference, troubleshooting,
+  disk + cost considerations.
+
+### Changed
+
+- **`Vector_Store::__construct()`** detects a Mirrored_Connection and
+  builds TWO `Vector_Store_Schema` instances (one per side). Schema
+  migrations run independently on each side so HNSW DDL lands on
+  local but is skipped on MotherDuck primary — same code path as
+  the non-mirrored MotherDuck install we shipped in 0.9.0. The
+  Vector_Store_Schema class itself is unchanged.
+- **`Connection_Factory::from_options()`** wraps the configured
+  connection in `Mirrored_Connection` when
+  `mode === 'motherduck' && motherduck_mirror_enabled === true`. The
+  Factory cache key includes the mirror toggle + path so toggling
+  on/off without a fresh request gives back the right connection.
+- **Options sanitiser** rejects `motherduck_mirror_enabled = true`
+  with a visible `settings_error` when `mode !== 'motherduck'` —
+  mirroring a local file to itself makes no sense.
+- **`MxChat_DuckDB_Plugin::init()`** registers
+  Mirror_Bootstrap + Mirror_Drain + Mirror_Drift_Check hooks
+  unconditionally (workers short-circuit when the mirror is
+  disabled). An `update_option_mxchat_duckdb_options` listener
+  triggers `Mirror_Bootstrap::start()` on a false → true
+  transition of the toggle.
+- **`MxChat_DuckDB_Plugin::deactivate()`** unschedules the
+  Action-Scheduler-managed mirror work (bootstrap + drain + drift
+  check) on plugin deactivation.
+- **`uninstall.php`** cleans the four new sidecar options + the
+  `motherduck_mirror_path` data file + unschedules both AS hooks.
+- **`MxChat_DuckDB_Mirror_Bootstrap::STATUS_DRIFTED`** added to the
+  known status enum; `get_status()` recognises it.
+- **PHPStan / Action Scheduler shims** gain
+  `as_next_scheduled_action` and `as_schedule_recurring_action` so
+  the test suite can verify the recurring tick scheduling without a
+  real Action Scheduler runtime.
+
+### Tests
+
+- **261 → 316 tests, 930 → 1121 assertions** vs v0.9.0. New test files:
+  - `MirroredConnectionTest` (13 cases): read routing, fallback
+    stickiness, write order, primary-fail propagation, local-fail
+    enqueue, queue cap, capability OR-semantics, identifier format,
+    accessors.
+  - `MirrorBootstrapTest` (12 cases): start/status transitions,
+    first tick (probe + schema + first batch), persisted cursor,
+    target_count=0 short-circuit, completion, error → re-enqueue,
+    mid-bootstrap disable, default state/status, reset_state.
+  - `MirrorDrainTest` (13 cases): drained removal, retry counter
+    bump, retry → quarantine, drained_total cumulative, per-tick
+    cap + FIFO overflow, skip when disabled / no local conn, empty
+    queue, malformed entry drop, register_hooks scheduling +
+    idempotency.
+  - `MirrorDriftCheckTest` (11 cases): identical no-drift +
+    timestamp stamp, DRIFTED → ACTIVE auto-clear, status
+    preservation, signature mismatch flips DRIFTED, large count
+    differential flips DRIFTED, small differential with pending is
+    drainable (status preserved), bot present on one side only,
+    per-bot isolation, skip paths, recurring tick scheduling.
+- `VectorStoreFacadeTest`: 2 new cases for the dual-side schema
+  application + the hnsw/fts read-from-local accessor behaviour
+  under mirror.
+- `OptionsSanitizeTest`: 4 new cases covering the mirror toggle's
+  sanitiser rules.
+- `HealthEndpointTest`: 2 new cases for the `mirror` block (present
+  with zeros when disabled, reflects actual counts when populated).
+
+### Notes
+
+- **Detection only, no auto-reconcile in v1.** When the daily drift
+  check finds real divergence, status flips to `drifted` and the
+  admin sees a one-line notice with the fix
+  (`wp mxchat-duckdb mirror-bootstrap --reset`). Auto-recovery
+  (per-bot scoped re-bootstrap) is queued for v0.11 — needs a
+  partial-bootstrap variant of the current full-table copy.
+- **Disk usage doubles** when the mirror is enabled. Admin UI
+  doesn't warn at toggle time in v1 — operators should consult
+  [docs/MIRROR.md](docs/MIRROR.md) before flipping the switch on a
+  large catalogue. The mirror file's parent directory gets the same
+  HTTP blockers as the embedded path.
+- **MotherDuck egress cost** for the initial bootstrap is on the
+  user (~6 KB per row × N rows). Subsequent operations don't add
+  per-query cost — only writes (canonical) and the daily drift
+  check (cheap GROUP BY).
+- No new public hook signatures changed. Safe drop-in from 0.9.0.
 
 ---
 

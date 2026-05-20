@@ -1,7 +1,7 @@
 # MxChat DuckDB / MotherDuck
 
 <p align="left">
-  <a href="#"><img alt="Plugin version" src="https://img.shields.io/badge/version-0.9.0-blue.svg"></a>
+  <a href="#"><img alt="Plugin version" src="https://img.shields.io/badge/version-0.10.0-blue.svg"></a>
   <a href="#"><img alt="PHP" src="https://img.shields.io/badge/php-%E2%89%A5%208.0-777BB4.svg?logo=php&logoColor=white"></a>
   <a href="#"><img alt="WordPress" src="https://img.shields.io/badge/wordpress-%E2%89%A5%206.0-21759B.svg?logo=wordpress&logoColor=white"></a>
   <a href="https://mxchat.ai/"><img alt="MxChat" src="https://img.shields.io/badge/mxchat-%E2%89%A5%203.2.5-2c3e50.svg"></a>
@@ -30,7 +30,8 @@ This plugin adds a third option:
 ## Features
 
 - 🪶 **Two backend modes** — embedded `.duckdb` file or [MotherDuck](https://motherduck.com/) cloud (via native DuckDB `ATTACH`), switchable at runtime.
-- ⚡ **HNSW-indexed similarity search** via DuckDB's VSS extension (`array_cosine_similarity`) — embedded backend only; MotherDuck cloud falls back to brute-force scans (see [Limitations](#limitations)).
+- ⚡ **HNSW-indexed similarity search** via DuckDB's VSS extension (`array_cosine_similarity`) — works on the embedded backend, and via the optional **local mirror** for MotherDuck installs (see [docs/MIRROR.md](docs/MIRROR.md)).
+- 🪞 **Local mirror for MotherDuck** (v0.10.0+) — synchronous write-through to a local `.duckdb` shadow with HNSW. MotherDuck stays the canonical store; reads come from local for HNSW acceleration. Resumable bootstrap, drift detection, automatic drain of failed writes.
 - 🔀 **Hybrid BM25 + vector retrieval** (optional) via DuckDB's FTS extension with min-max-normalised score blending.
 - 💨 **Query result cache** keyed by embedding hash + filter + bot — slashes MotherDuck cost and latency on repeat queries.
 - 🎯 **Per-source dedup + custom reranker hook** so the LLM sees diverse, high-quality context.
@@ -107,6 +108,7 @@ Then activate **MxChat DuckDB / MotherDuck** in the WordPress plugins screen (af
 | [docs/HOOKS.md](docs/HOOKS.md) | Every filter and action the plugin exposes, with signatures and PHP examples. |
 | [docs/CLI.md](docs/CLI.md) | Full `wp mxchat-duckdb` reference with sample output. |
 | [docs/USAGE.md](docs/USAGE.md) | Howtos: async reprocess, Pinecone migration, Parquet backup/restore, INT8 quantization, `/health` endpoint, end-to-end verification. |
+| [docs/MIRROR.md](docs/MIRROR.md) | Local mirror for MotherDuck installs (v0.10.0+): when to enable, status states, troubleshooting, WP-CLI commands, disk + cost considerations. |
 | [CHANGELOG.md](CHANGELOG.md) | Release history. |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | How to file a bug, send a PR, run the test suite. |
 
@@ -128,7 +130,10 @@ Then activate **MxChat DuckDB / MotherDuck** in the WordPress plugins screen (af
 - **Embedding dimension** must match the model active in MxChat. The settings page shows the detected dimension; the plugin now blocks `embedding_dim` changes when the table already contains vectors — you must wipe and re-sync to switch models.
 - **Direct SQL writes** to `wp_mxchat_system_prompt_content` (outside MxChat's UI) won't propagate to DuckDB until the next incremental cron tick.
 - **HNSW + multi-tenant `bot_id` filter**: DuckDB VSS does not push down arbitrary `WHERE` clauses into the HNSW index, so queries scoped by `bot_id` fall back to a brute-force scan. Single-tenant installs use the index as expected.
-- **HNSW on MotherDuck**: MotherDuck cloud does not currently support the VSS extension ([source](https://motherduck.com/docs/concepts/duckdb-extensions/)). Queries on MotherDuck-backed installs run as brute-force `array_cosine_similarity` scans — workable up to ~100k vectors, noticeably slower beyond. The plugin detects the backend automatically, skips the unsupported DDL cleanly, persists the verdict in the schema-meta table, and surfaces an admin notice when `hnsw_enabled` is toggled on against MotherDuck. Switch to the embedded backend for HNSW acceleration on larger catalogues.
+- **HNSW on MotherDuck cloud**: MotherDuck cloud does not currently support the VSS extension ([source](https://motherduck.com/docs/concepts/duckdb-extensions/)). Two ways out, depending on the deployment shape:
+  - **(Recommended for > 100k vectors) Enable the local mirror** (v0.10.0+). The plugin maintains a local `.duckdb` shadow with HNSW indexed; MotherDuck stays the canonical write target and reads route to local. See [docs/MIRROR.md](docs/MIRROR.md).
+  - **Or switch to the embedded backend** for a single-server install that doesn't need MotherDuck's multi-server access.
+  Without either, queries run as brute-force `array_cosine_similarity` scans — fine under ~100k vectors but slow beyond. The plugin surfaces an admin notice in that combination.
 
 ## Contributing
 

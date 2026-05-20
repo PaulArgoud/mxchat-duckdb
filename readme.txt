@@ -4,7 +4,7 @@ Tags: chatbot, ai, vector-search, duckdb, motherduck, pinecone, embeddings, rag,
 Requires at least: 6.0
 Tested up to: 6.7
 Requires PHP: 8.0
-Stable tag: 0.9.0
+Stable tag: 0.10.0
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -26,7 +26,8 @@ Both backends use DuckDB's native VSS (vector similarity search) extension with 
 = Features =
 
 * Two backend modes — embedded `.duckdb` file or MotherDuck cloud (via DuckDB's native `ATTACH 'md:...'`).
-* HNSW-indexed similarity search via DuckDB's VSS extension (embedded backend only; MotherDuck cloud falls back to brute-force scans — VSS is not supported cloud-side, plugin detects this automatically and surfaces an admin notice).
+* HNSW-indexed similarity search via DuckDB's VSS extension (embedded backend, or MotherDuck via the optional local mirror — see below).
+* Local mirror for MotherDuck installs (v0.10.0+) — maintains a local `.duckdb` shadow with HNSW. MotherDuck stays the canonical write target; reads serve from local for HNSW acceleration. Resumable bootstrap, drift detection, automatic drain of failed writes. Opt-in. See docs/MIRROR.md for the operator guide.
 * Hybrid BM25 + vector retrieval (optional) via DuckDB FTS.
 * Query result cache keyed by embedding hash + filter + bot.
 * Per-source dedup and custom reranker hook.
@@ -94,6 +95,21 @@ By default, no — your `.duckdb` file is preserved on uninstall because it may 
 4. Async reprocess progress driven by Action Scheduler.
 
 == Changelog ==
+
+= 0.10.0 =
+* Local mirror for MotherDuck installs (headline feature). Maintains a local `.duckdb` shadow with HNSW indexed; MotherDuck stays the canonical write target; reads route to local for HNSW acceleration. Opt-in. No public API break. Safe drop-in from 0.9.0. See docs/MIRROR.md for the operator guide.
+* New `MxChat_DuckDB_Mirrored_Connection` wrapper: reads route to local; writes go to primary first (canonical), then local (best-effort). On local-side write failure the SQL is queued for replay; on local-side read failure the request falls back to primary for the rest of the request.
+* New `MxChat_DuckDB_Mirror_Bootstrap` Action Scheduler worker: walks MotherDuck → local in resumable batches via `ATTACH 'md:<db>' AS md_remote` + cursor-based pagination. Five status states: disabled / bootstrapping / active / drifted / error.
+* New `MxChat_DuckDB_Mirror_Drain` Action Scheduler tick (every 5 min): replays failed local writes from `mirror_pending`. Entries hitting PENDING_RETRY_LIMIT = 10 move to quarantine + surface in /health + admin notice. Per-tick cap DRAIN_MAX_PER_TICK = 50 keeps a stuck queue from monopolising the worker.
+* New `MxChat_DuckDB_Mirror_Drift_Check` Action Scheduler tick (daily, anchored +12h): compares (COUNT, md5(string_agg(vector_id ORDER BY))) per bot_id between primary and local. Real divergence flips status to drifted + surfaces admin notice. Small differential with pending entries is classified as drainable (drain catches up; status preserved).
+* New options: `motherduck_mirror_enabled` (bool), `motherduck_mirror_path` (string, defaults to `<uploads>/mxchat-duckdb-private/mirror.duckdb`). Sidecar options for status, bootstrap state, pending queue, and last drift-check timestamp — all cleaned up by uninstall.php.
+* Admin UI: toggle + path field + live status panel (progress %, last error, pending/quarantine counters, last drift check age) in the MotherDuck section. Coloured per status state.
+* Admin notices: HNSW + MotherDuck without mirror → recommend enabling; STATUS_DRIFTED → recommend mirror-bootstrap --reset; STATUS_ERROR → surface last_error; quarantine_count > 0 → name likely root causes.
+* `/health` endpoint gains a `mirror` block: enabled, status, pending_count, quarantine_count, drained_total, quarantine_total, last_drift_check_at, last_drift_check_age_s. Always populated (zeros on disabled installs) so external dashboards don't see a chart line going missing.
+* New WP-CLI commands: `wp mxchat-duckdb mirror-bootstrap [--reset|--step]`, `wp mxchat-duckdb mirror-drain [--status]`, `wp mxchat-duckdb mirror-drift-check` (prints per-bot diff table).
+* New docs: docs/DESIGN-motherduck-mirror.md (architecture + decisions), docs/MIRROR.md (operator guide: when to enable, status reference, troubleshooting, disk + cost considerations).
+* Tests: 261 → 316 (+55), 930 → 1121 assertions (+191) vs v0.9.0. Four new test files cover the wrapper, bootstrap, drain, and drift-check classes.
+* Detection only in v1 — auto-reconciliation of drifted bot_ids (per-bot scoped re-bootstrap) is queued for v0.11.
 
 = 0.9.0 =
 * Security defence-in-depth + MotherDuck capability honesty. No schema migration; safe drop-in from 0.8.0. One new method on the `MxChat_DuckDB_Connection` interface (`supports_capability()`) — only relevant for custom connection implementations.
@@ -188,6 +204,9 @@ By default, no — your `.duckdb` file is preserved on uninstall because it may 
 * Initial release.
 
 == Upgrade Notice ==
+
+= 0.10.0 =
+Adds the local mirror for MotherDuck installs (opt-in). Maintains a local DuckDB shadow with HNSW for fast reads while MotherDuck stays the canonical write target. No schema migration. No public API break — safe drop-in from 0.9.0. MotherDuck installs with > 100k vectors should consult docs/MIRROR.md before enabling: the bootstrap pulls every row over the wire once (MotherDuck egress cost) and the mirror doubles disk usage.
 
 = 0.9.0 =
 Security defence-in-depth + MotherDuck capability honesty. No schema migration. MotherDuck users with `hnsw_enabled=true` will see a new admin notice explaining that HNSW is not supported cloud-side and queries fall back to brute-force; either switch to Embedded mode for HNSW acceleration or disable the toggle to silence. Safe drop-in upgrade.
