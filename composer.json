@@ -24,9 +24,6 @@
     "autoload": {
         "classmap": [
             "includes/"
-        ],
-        "files": [
-            "includes/class-duckdb-cli.php"
         ]
     },
     "autoload-dev": {

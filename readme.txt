@@ -4,7 +4,7 @@ Tags: chatbot, ai, vector-search, duckdb, motherduck, pinecone, embeddings, rag,
 Requires at least: 6.0
 Tested up to: 6.7
 Requires PHP: 8.0
-Stable tag: 0.10.1
+Stable tag: 0.11.0
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -95,6 +95,18 @@ By default, no — your `.duckdb` file is preserved on uninstall because it may 
 4. Async reprocess progress driven by Action Scheduler.
 
 == Changelog ==
+
+= 0.11.0 =
+* Hardening + ergonomics pass triggered by a senior-review of the v0.10.1 codebase. Two real bugs uncovered, three rough edges sanded, upstream-patch story now ships a ready-to-apply unified diff. No schema migration. Safe drop-in from 0.10.1.
+* Fixed: silent data loss on `wp mxchat-duckdb sync` for installs with chunked WP-DB rows. mxchat stores chunked content with a JSON-prefix header (one row per chunk); both sync paths hashed every row to md5(source_url) and collapsed all chunks of the same URL into a single vector with only the last chunk's text. Both paths now peel the JSON header and write each chunk under `{md5(url)}_chunk_{N}` to match mxchat's own convention. New `parse_chunk_prefix()` helper; `vector_id_for_row()` takes an optional chunk-meta second arg; the native-DuckDB path uses a 3-stage CTE with json_extract_string.
+* Fixed: local PHPUnit / PHPStan (and likely the CI test job) were silently exiting before running. `includes/class-duckdb-cli.php` was in composer's "files" autoload and its `exit;` WP safety guard killed the process whenever vendor/autoload.php loaded outside WordPress. Now classmap-only; the composer branch requires it explicitly under the WP_CLI guard.
+* Added: `pre_option_mxchat_pinecone_addon_options` shortcircuit for Option B on the default bot. mxchat-basic reads its Pinecone config straight from wp_options for `bot_id === 'default'` (without the Multi-Bot Manager), bypassing the filter this plugin uses to advertise itself. New explicit opt-in setting `takeover_default_bot_pinecone` (default off) shortcircuits that read with our proxy config without touching the DB row. Sites running real Pinecone alongside DuckDB on the default bot aren't affected.
+* Added: `MXCHAT_DUCKDB_MOTHERDUCK_TOKEN` constant override. Define it in wp-config.php to make the plugin prefer the constant over the persisted option — for compliance-driven installs that forbid storing secrets in wp_options. Admin UI detects the override and disables the token field.
+* Added: `patches/mxchat-pre-vector-query.diff` — ready-to-apply unified diff (`patch -p1 < …`) that adds the `mxchat_pre_vector_query` short-circuit filter upstream, verified to apply cleanly against mxchat-basic 3.2.6.
+* Added: `docs/BACKUP.md` — full backup / restore runbook (Parquet export + verify, filesystem snapshot for Embedded, cross-environment moves, disaster-recovery checklist).
+* Changed: status badge `alpha` → `beta`. With 348 unit tests, two production-ready backends, and a steady release cadence, the alpha tag was undersold.
+* Changed: `is_transient_error()` no longer uses `is_a($e, $cls)` against runtime class names (PHPStan couldn't track it). Same runtime semantics via `class_parents() + $e::class`; the dedicated phpstan ignore entry is gone.
+* Tests: 335 → 348 (+13). New chunk-detection coverage, +3 pre_option_* filter tests, +4 takeover/resolved_motherduck_token tests.
 
 = 0.10.1 =
 * Compatibility pass against mxchat-basic 3.2.6 (released a few days after 0.10.0). Audit covered every cross-plugin surface — embedding-model registry, `submit_content_to_db`, `mxchat_get_bot_pinecone_config` + `mxchat_pre_vector_query` filters, `wp_mxchat_system_prompt_content` schema, option keys, every AJAX delete hook. No schema migration. Safe drop-in from 0.10.0.
@@ -213,6 +225,9 @@ By default, no — your `.duckdb` file is preserved on uninstall because it may 
 * Initial release.
 
 == Upgrade Notice ==
+
+= 0.11.0 =
+Hardening + ergonomics pass. Two real bugs fixed: silent data loss on `wp mxchat-duckdb sync` for KBs with chunked WP-DB rows (every chunk now lands in its own vector_id instead of collapsing to one), and a composer autoload eager-load bug that was silently exiting PHPUnit / PHPStan locally and likely in CI too. Default-bot Option B now reachable on stock mxchat via a new explicit opt-in (`takeover_default_bot_pinecone`); MotherDuck token can be overridden by `MXCHAT_DUCKDB_MOTHERDUCK_TOKEN` in wp-config.php for compliance-driven installs. Safe drop-in from 0.10.1. No schema migration.
 
 = 0.10.1 =
 Compatibility pass against mxchat-basic 3.2.6 (audit + two real findings fixed). Restores the cascade-delete bridge that was silently no-op-ing for every legitimate delete from mxchat's admin (DuckDB drift on real-Pinecone installs); adds chunk-aware support in `/vectors/list` (prefix filter, `LIKE` escaped) so mxchat's chunk-reassembly and bulk-delete paths route correctly; intercepts mxchat's two newer delete AJAX hooks. No schema migration. No public API break. Safe drop-in from 0.10.0.

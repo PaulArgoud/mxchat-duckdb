@@ -7,16 +7,23 @@ if (!defined('ABSPATH')) { exit; }
     <tr>
         <th scope="row"><label for="motherduck_token"><?php esc_html_e('Token', 'mxchat-duckdb'); ?></label></th>
         <td>
+            <?php $token_overridden = MxChat_DuckDB_Options::motherduck_token_is_from_constant(); ?>
             <input type="password" id="motherduck_token" class="regular-text"
                    name="<?php echo esc_attr(MXCHAT_DUCKDB_OPTION_KEY); ?>[motherduck_token]"
-                   value="<?php echo esc_attr($opts['motherduck_token'] ?? ''); ?>" autocomplete="off">
+                   value="<?php echo esc_attr($opts['motherduck_token'] ?? ''); ?>"
+                   autocomplete="off" <?php disabled($token_overridden); ?>>
             <p class="description">
-                <?php
-                echo wp_kses_post(__(
-                    'MotherDuck token (from <a href="https://app.motherduck.com" target="_blank" rel="noopener">app.motherduck.com</a>).',
-                    'mxchat-duckdb'
-                ));
-                ?>
+                <?php if ($token_overridden) : ?>
+                    <strong><?php esc_html_e('Overridden by the MXCHAT_DUCKDB_MOTHERDUCK_TOKEN constant in wp-config.php.', 'mxchat-duckdb'); ?></strong>
+                    <?php esc_html_e('The token defined in wp-config takes precedence over this field; remove the constant to edit the value here.', 'mxchat-duckdb'); ?>
+                <?php else : ?>
+                    <?php
+                    echo wp_kses_post(__(
+                        'MotherDuck token (from <a href="https://app.motherduck.com" target="_blank" rel="noopener">app.motherduck.com</a>). For compliance-driven installs that forbid storing secrets in the database, define <code>MXCHAT_DUCKDB_MOTHERDUCK_TOKEN</code> in <code>wp-config.php</code> to override this field at runtime.',
+                        'mxchat-duckdb'
+                    ));
+                    ?>
+                <?php endif; ?>
             </p>
         </td>
     </tr>

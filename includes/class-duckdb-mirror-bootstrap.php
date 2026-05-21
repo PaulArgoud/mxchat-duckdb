@@ -312,7 +312,10 @@ class MxChat_DuckDB_Mirror_Bootstrap {
         if ($this->bootstrap_conn !== null) {
             return $this->bootstrap_conn;
         }
-        $token  = (string) ($opts['motherduck_token'] ?? '');
+        // Prefer the MXCHAT_DUCKDB_MOTHERDUCK_TOKEN constant when defined in
+        // wp-config.php (compliance-driven secret hygiene); fall back to the
+        // persisted option otherwise.
+        $token  = MxChat_DuckDB_Options::resolved_motherduck_token();
         $db     = (string) ($opts['motherduck_database'] ?? '');
         if ($token === '' || $db === '') {
             throw new RuntimeException('Mirror bootstrap requires a MotherDuck token + database.');

@@ -34,4 +34,21 @@ if (!defined('ABSPATH')) { exit; }
             </label>
         </td>
     </tr>
+    <tr>
+        <th scope="row"><?php esc_html_e('Default-bot routing', 'mxchat-duckdb'); ?></th>
+        <td>
+            <label>
+                <input type="checkbox"
+                       name="<?php echo esc_attr(MXCHAT_DUCKDB_OPTION_KEY); ?>[takeover_default_bot_pinecone]"
+                       value="1" <?php checked(!empty($opts['takeover_default_bot_pinecone'])); ?>>
+                <?php esc_html_e('Route default-bot Pinecone calls through this plugin (Option B reach)', 'mxchat-duckdb'); ?>
+            </label>
+            <p class="description">
+                <?php esc_html_e(
+                    'MxChat reads its Pinecone settings straight from the database for the default bot when the Multi-Bot Manager isn\'t active, which bypasses the filter this plugin uses to advertise itself. Enable this to shortcircuit that read and route default-bot calls through the proxy too. Leave OFF if you\'re running real Pinecone alongside DuckDB on the default bot, or if you\'ve applied the upstream patch (Option A) — the patch path doesn\'t need this setting.',
+                    'mxchat-duckdb'
+                ); ?>
+            </p>
+        </td>
+    </tr>
 </table>

@@ -41,16 +41,6 @@ parameters:
         -
             message: '#Function WP_CLI\\Utils\\(format_items|make_progress_bar) not found#'
             path: includes/class-duckdb-cli.php
-        # The transient-exception class probe in MxChat_DuckDB_Embedded_Connection::is_transient_error()
-        # iterates over class names that PHPStan doesn't know exist (the real
-        # DuckDB / saturio extensions aren't in any stub package). At runtime
-        # the loop short-circuits via class_exists($cls, false); statically
-        # PHPStan reduces both is_a() calls to "always false" because the
-        # types never narrow. This is the right runtime behaviour but a
-        # misleading static signal — ignore it explicitly.
-        -
-            message: '#Call to function is_a\(\) with Throwable and \*NEVER\* will always evaluate to false#'
-            path: includes/class-duckdb-embedded-connection.php
     # Path to level 8: once a CI run with the new dev-deps is green at level 6,
     # bump to 7, run, baseline any noise, bump to 8, drop continue-on-error in
     # ci.yml. Doing it incrementally keeps each diff reviewable.

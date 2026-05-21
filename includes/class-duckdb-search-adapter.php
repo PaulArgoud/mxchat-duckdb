@@ -49,6 +49,17 @@ class MxChat_DuckDB_Search_Adapter {
 
         add_filter('mxchat_get_bot_pinecone_config', [$this, 'inject_pinecone_config'], 10, 2);
 
+        // mxchat-basic short-circuits the `mxchat_get_bot_pinecone_config`
+        // filter for `bot_id === 'default'` when the Multi-Bot Manager isn't
+        // loaded (class-mxchat-integrator.php:1960, class-pinecone-manager.php:1238
+        // in 3.2.6). It reads `mxchat_pinecone_addon_options` straight from
+        // wp_options instead. The `pre_option_*` filter is the canonical
+        // WP-core way to intercept that read without persisting anything —
+        // explicit opt-in via the `takeover_default_bot_pinecone` setting so
+        // sites running real Pinecone aren't surprised by their settings
+        // being hijacked.
+        add_filter('pre_option_mxchat_pinecone_addon_options', [$this, 'inject_pinecone_addon_options']);
+
         if (is_admin()) {
             add_action('admin_notices', [$this, 'render_error_notice']);
         }
@@ -144,6 +155,65 @@ class MxChat_DuckDB_Search_Adapter {
             'api_key'      => MxChat_DuckDB_Pinecone_Proxy::get_or_create_token_for($namespace),
             'host'         => MxChat_DuckDB_Pinecone_Proxy::pinecone_host(),
             'namespace'    => $namespace,
+        ];
+    }
+
+    /**
+     * `pre_option_mxchat_pinecone_addon_options` handler — shortcircuits the
+     * default-bot Pinecone-config read. mxchat-basic uses the value of this
+     * option directly when the bot is `default` AND the Multi-Bot Manager
+     * isn't loaded, so neither `inject_pinecone_config` above nor the
+     * `mxchat_pre_vector_query` filter would fire. Returning our proxy-
+     * shaped config here makes Option B reach the default bot transparently.
+     *
+     * Default-off (the `takeover_default_bot_pinecone` setting must be
+     * explicitly enabled) so sites already configured against real Pinecone
+     * don't see their settings hijacked. The DB row is never touched —
+     * `update_option` paths still write through normally.
+     *
+     * The mxchat option shape mxchat-basic expects (per
+     * admin/class-pinecone-manager.php:1239):
+     *   {
+     *     mxchat_use_pinecone:        '1' | '0',
+     *     mxchat_pinecone_api_key:    string,
+     *     mxchat_pinecone_host:       string (no scheme, no trailing slash),
+     *     mxchat_pinecone_namespace:  string,
+     *     mxchat_pinecone_environment: string,
+     *     mxchat_pinecone_index:       string,
+     *   }
+     *
+     * @param mixed $value WordPress passes `false` when no other pre-filter
+     *                     has shortcircuited; returning non-false skips the
+     *                     DB read.
+     */
+    public function inject_pinecone_addon_options($value) {
+        $opts = MxChat_DuckDB_Options::get();
+        if (empty($opts['enabled']) || empty($opts['takeover_default_bot_pinecone'])) {
+            return $value;
+        }
+
+        // Guard against re-entrancy — `get_or_create_token_for()` reads our
+        // own option which would loop right back through this filter if the
+        // namespace token isn't cached yet. Cheap static flag, scoped to the
+        // request.
+        static $reentry = false;
+        if ($reentry) return $value;
+        $reentry = true;
+        try {
+            $namespace = 'default';
+            $token = MxChat_DuckDB_Pinecone_Proxy::get_or_create_token_for($namespace);
+            $host  = MxChat_DuckDB_Pinecone_Proxy::pinecone_host();
+        } finally {
+            $reentry = false;
+        }
+
+        return [
+            'mxchat_use_pinecone'         => '1',
+            'mxchat_pinecone_api_key'     => $token,
+            'mxchat_pinecone_host'        => $host,
+            'mxchat_pinecone_namespace'   => $namespace,
+            'mxchat_pinecone_environment' => '',
+            'mxchat_pinecone_index'       => '',
         ];
     }
 

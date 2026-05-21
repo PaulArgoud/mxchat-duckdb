@@ -260,4 +260,69 @@ final class OptionsSanitizeTest extends TestCase {
         $this->assertFalse($out['motherduck_mirror_enabled']);
         $this->assertSame('', $out['motherduck_mirror_path']);
     }
+
+    public function test_takeover_default_bot_pinecone_defaults_off(): void {
+        // The default-bot Option B shortcircuit is strictly opt-in. Sites
+        // running real Pinecone alongside DuckDB on the default bot must
+        // not see their settings hijacked by an empty form submission.
+        $out = $this->sanitize([]);
+        $this->assertFalse($out['takeover_default_bot_pinecone']);
+    }
+
+    public function test_takeover_default_bot_pinecone_coerces_truthy_values(): void {
+        $this->assertTrue($this->sanitize(['takeover_default_bot_pinecone' => '1'])['takeover_default_bot_pinecone']);
+        $this->assertTrue($this->sanitize(['takeover_default_bot_pinecone' => 'on'])['takeover_default_bot_pinecone']);
+        $this->assertTrue($this->sanitize(['takeover_default_bot_pinecone' => 1])['takeover_default_bot_pinecone']);
+        $this->assertFalse($this->sanitize(['takeover_default_bot_pinecone' => ''])['takeover_default_bot_pinecone']);
+        $this->assertFalse($this->sanitize(['takeover_default_bot_pinecone' => '0'])['takeover_default_bot_pinecone']);
+    }
+
+    // ─── MotherDuck token resolution ──────────────────────────────────────
+
+    public function test_resolved_motherduck_token_returns_option_when_no_constant(): void {
+        // The constant defined at the test process level can't be unset, so
+        // we only assert the option-fallback path when no override is
+        // defined. The constant-wins path is exercised by the next test
+        // through an in-process runkit-style shim (we set the override
+        // directly via define() if not yet defined and assert it wins).
+        update_option('mxchat_duckdb_options', array_merge(
+            MxChat_DuckDB_Options::defaults(),
+            ['motherduck_token' => 'tok-from-option']
+        ));
+
+        if (!defined('MXCHAT_DUCKDB_MOTHERDUCK_TOKEN')) {
+            $this->assertSame('tok-from-option', MxChat_DuckDB_Options::resolved_motherduck_token());
+            $this->assertFalse(MxChat_DuckDB_Options::motherduck_token_is_from_constant());
+        } else {
+            // The constant was already defined upstream in this PHP
+            // process; verify it wins (this is the contract).
+            $this->assertSame(
+                (string) constant('MXCHAT_DUCKDB_MOTHERDUCK_TOKEN'),
+                MxChat_DuckDB_Options::resolved_motherduck_token()
+            );
+            $this->assertTrue(MxChat_DuckDB_Options::motherduck_token_is_from_constant());
+        }
+    }
+
+    public function test_resolved_motherduck_token_constant_takes_precedence(): void {
+        // Define the constant late so we can also exercise it. Once defined
+        // in a PHP process it's permanent, so this test must run after the
+        // previous one — phpunit's default alpha-by-method order satisfies
+        // that ("constant_takes_precedence" > "returns_option_when_no_constant").
+        if (!defined('MXCHAT_DUCKDB_MOTHERDUCK_TOKEN')) {
+            define('MXCHAT_DUCKDB_MOTHERDUCK_TOKEN', 'tok-from-wpconfig');
+        }
+
+        update_option('mxchat_duckdb_options', array_merge(
+            MxChat_DuckDB_Options::defaults(),
+            ['motherduck_token' => 'tok-from-option-but-IGNORED']
+        ));
+
+        $this->assertSame(
+            (string) constant('MXCHAT_DUCKDB_MOTHERDUCK_TOKEN'),
+            MxChat_DuckDB_Options::resolved_motherduck_token(),
+            'wp-config constant must win over the option row'
+        );
+        $this->assertTrue(MxChat_DuckDB_Options::motherduck_token_is_from_constant());
+    }
 }

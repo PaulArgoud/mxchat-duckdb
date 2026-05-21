@@ -138,6 +138,52 @@ final class PreVectorQueryTest extends TestCase {
         $this->assertSame(7, $captured_k);
     }
 
+    // ─── inject_pinecone_addon_options (pre_option_* shortcircuit) ───────
+
+    public function test_pre_option_returns_value_unchanged_when_plugin_disabled(): void {
+        // Plugin enabled in setUp; override to disabled for this case.
+        update_option('mxchat_duckdb_options', array_merge(
+            MxChat_DuckDB_Options::defaults(),
+            ['enabled' => false, 'takeover_default_bot_pinecone' => true]
+        ));
+
+        // Passing `false` mirrors what WP passes when no other pre_option_*
+        // handler has shortcircuited.
+        $this->assertFalse($this->adapter->inject_pinecone_addon_options(false));
+    }
+
+    public function test_pre_option_returns_value_unchanged_when_takeover_off(): void {
+        // Default: enabled but takeover off — must NOT hijack the option.
+        update_option('mxchat_duckdb_options', array_merge(
+            MxChat_DuckDB_Options::defaults(),
+            ['enabled' => true, 'takeover_default_bot_pinecone' => false]
+        ));
+
+        $this->assertFalse($this->adapter->inject_pinecone_addon_options(false));
+    }
+
+    public function test_pre_option_returns_pinecone_shaped_config_when_takeover_on(): void {
+        update_option('mxchat_duckdb_options', array_merge(
+            MxChat_DuckDB_Options::defaults(),
+            ['enabled' => true, 'takeover_default_bot_pinecone' => true]
+        ));
+
+        $out = $this->adapter->inject_pinecone_addon_options(false);
+
+        $this->assertIsArray($out);
+        $this->assertSame('1', $out['mxchat_use_pinecone']);
+        // Host = our proxy REST endpoint, no scheme, no trailing slash.
+        $this->assertNotEmpty($out['mxchat_pinecone_host']);
+        $this->assertStringNotContainsString('https://', $out['mxchat_pinecone_host']);
+        // Default-bot namespace.
+        $this->assertSame('default', $out['mxchat_pinecone_namespace']);
+        // API key is the per-namespace proxy token, not empty.
+        $this->assertNotEmpty($out['mxchat_pinecone_api_key']);
+        // Environment + index are kept empty to match mxchat's shape.
+        $this->assertSame('', $out['mxchat_pinecone_environment']);
+        $this->assertSame('', $out['mxchat_pinecone_index']);
+    }
+
     // ─── Error path ───────────────────────────────────────────────────────
 
     public function test_vector_store_exception_returns_empty_matches_and_surfaces_admin_notice(): void {

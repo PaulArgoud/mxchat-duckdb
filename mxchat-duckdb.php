@@ -3,7 +3,7 @@
  * Plugin Name: MxChat DuckDB / MotherDuck
  * Plugin URI: https://github.com/paulargoud/mxchat-duckdb
  * Description: Adds DuckDB (embedded) and MotherDuck (cloud) as alternative vector stores for MxChat, replacing Pinecone with an open-source, SQL-native option.
- * Version: 0.10.1
+ * Version: 0.11.0
  * Author: Paul Argoud
  * License: GPLv2 or later
  * Text Domain: mxchat-duckdb
@@ -26,7 +26,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-define('MXCHAT_DUCKDB_VERSION', '0.10.1');
+define('MXCHAT_DUCKDB_VERSION', '0.11.0');
 define('MXCHAT_DUCKDB_FILE', __FILE__);
 define('MXCHAT_DUCKDB_DIR', plugin_dir_path(__FILE__));
 define('MXCHAT_DUCKDB_URL', plugin_dir_url(__FILE__));
@@ -34,8 +34,18 @@ define('MXCHAT_DUCKDB_OPTION_KEY', 'mxchat_duckdb_options');
 
 // Prefer Composer's autoloader when installed (`composer install`), otherwise
 // fall back to manual require_once. The plugin runs identically either way.
+//
+// Note: `includes/class-duckdb-cli.php` is intentionally NOT in composer's
+// `"files"` autoload — it starts with the conventional WP safety guard
+// `if (!defined('ABSPATH')) { exit; }`, which would silently terminate
+// PHPUnit / PHPStan whenever `vendor/autoload.php` is loaded outside of
+// WordPress. The class is loaded explicitly under the WP_CLI guard below
+// (same condition the manual-fallback branch already uses).
 if (file_exists(MXCHAT_DUCKDB_DIR . 'vendor/autoload.php')) {
     require_once MXCHAT_DUCKDB_DIR . 'vendor/autoload.php';
+    if (defined('WP_CLI') && WP_CLI) {
+        require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-cli.php';
+    }
 } else {
     require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-options.php';
     require_once MXCHAT_DUCKDB_DIR . 'includes/class-duckdb-metrics.php';

@@ -87,32 +87,76 @@ class MxChat_DuckDB_Mysql_Sync {
 
             // The big one: read straight from MySQL, parse the PHP-serialized
             // embedding via regex, cast to FLOAT[N], align metadata defaults.
+            //
+            // Chunked-content detection: mxchat-basic stores chunks with a
+            // JSON-prefix `{"document_type":"chunked",...}\n---\n<text>` in
+            // article_content (see MxChat_Chunker::format_chunk_for_storage).
+            // Without parsing it, every chunk of the same URL would collapse
+            // into a single vector_id (md5(url)) and INSERT OR REPLACE would
+            // silently keep only the last one — see parse_chunk_prefix() for
+            // the PHP-path equivalent. Detection is a CTE that splits at the
+            // `\n---\n` separator and extracts the chunk_index / total_chunks
+            // values; vector_id then mirrors mxchat\'s
+            // `{md5(url)}_chunk_{N}` scheme for chunked rows.
             $sql = sprintf(
                 'INSERT OR REPLACE INTO %1$s
                     (vector_id, bot_id, embedding, content, source_url,
                      role_restriction, content_type, chunk_index, total_chunks, is_chunked)
+                 WITH src AS (
+                    SELECT
+                        id, url, embedding_vector, role_restriction, content_type,
+                        %6$s,
+                        article_content,
+                        starts_with(COALESCE(article_content, \'\'), \'{"document_type"\') AS has_prefix,
+                        position(E\'\\n---\\n\' IN COALESCE(article_content, \'\')) AS sep_pos
+                    FROM "%4$s"."%5$s"
+                    WHERE embedding_vector IS NOT NULL AND embedding_vector != \'\'
+                 ),
+                 parsed AS (
+                    SELECT *,
+                        CASE WHEN has_prefix AND sep_pos > 0
+                             THEN substring(article_content, 1, sep_pos - 1)
+                             ELSE NULL
+                        END AS meta_json,
+                        CASE WHEN has_prefix AND sep_pos > 0
+                             THEN substring(article_content, sep_pos + 5)
+                             ELSE COALESCE(article_content, \'\')
+                        END AS body_text
+                    FROM src
+                 ),
+                 enriched AS (
+                    SELECT *,
+                        TRY_CAST(json_extract_string(meta_json, \'$.chunk_index\')  AS INTEGER) AS chunk_idx,
+                        TRY_CAST(json_extract_string(meta_json, \'$.total_chunks\') AS INTEGER) AS chunk_total,
+                        (meta_json IS NOT NULL
+                         AND json_extract_string(meta_json, \'$.document_type\') = \'chunked\') AS is_chunk_row
+                    FROM parsed
+                 )
                  SELECT
-                    CASE WHEN COALESCE(url, \'\') != \'\'
-                         THEN md5(url)
-                         ELSE \'mxchat_kb_\' || CAST(id AS VARCHAR)
+                    CASE
+                        WHEN is_chunk_row AND COALESCE(url, \'\') != \'\'
+                             THEN md5(url) || \'_chunk_\' || CAST(COALESCE(chunk_idx, 0) AS VARCHAR)
+                        WHEN COALESCE(url, \'\') != \'\'
+                             THEN md5(url)
+                        ELSE \'mxchat_kb_\' || CAST(id AS VARCHAR)
                     END AS vector_id,
                     %2$s AS bot_id,
                     CAST(regexp_extract_all(embedding_vector, \'d:([-0-9.eE+]+);\', 1)
                          AS DOUBLE[])::FLOAT[%3$d] AS embedding,
-                    COALESCE(article_content, \'\') AS content,
+                    body_text AS content,
                     COALESCE(url, \'\') AS source_url,
                     COALESCE(role_restriction, \'public\') AS role_restriction,
                     COALESCE(content_type, \'content\') AS content_type,
-                    NULL::INTEGER AS chunk_index,
-                    NULL::INTEGER AS total_chunks,
-                    FALSE AS is_chunked
-                 FROM "%4$s"."%5$s"
-                 WHERE embedding_vector IS NOT NULL AND embedding_vector != \'\'',
+                    CASE WHEN is_chunk_row THEN chunk_idx   ELSE NULL END AS chunk_index,
+                    CASE WHEN is_chunk_row THEN chunk_total ELSE NULL END AS total_chunks,
+                    is_chunk_row AS is_chunked
+                 FROM enriched',
                 $store->table_name_quoted(),
                 $bot_id_expr,
                 $dim,
                 $attach_alias,
-                $kb
+                $kb,
+                !empty($columns['has_bot_id']) ? 'bot_id' : "'default' AS bot_id"
             );
             $conn->execute($sql);
 
@@ -497,15 +541,68 @@ class MxChat_DuckDB_Mysql_Sync {
     }
 
     /**
-     * Vector ID scheme aligned with mxchat's: md5(source_url) for URL-based
-     * entries, fallback to "mxchat_kb_{id}" for manual rows without a URL.
+     * Vector ID scheme aligned with mxchat's:
+     *   - chunked rows:     md5(source_url) || '_chunk_' || chunk_index
+     *     (matches MxChat_Chunker::generate_chunk_vector_id())
+     *   - URL-based rows:   md5(source_url)
+     *   - manual rows w/o URL: 'mxchat_kb_' || id (our fallback for ancient rows
+     *     that pre-date mxchat's source_url-required constraint).
+     *
      * Public + static so the compactor and tests can call it without a
-     * Mysql_Sync instance.
+     * Mysql_Sync instance. The optional `$chunk_meta` argument carries the
+     * parsed JSON-prefix metadata from `parse_chunk_prefix()` — pass null for
+     * non-chunked content.
+     *
+     * @param array{is_chunked:bool, chunk_index:?int, total_chunks:?int, text:string}|null $chunk_meta
      */
-    public static function vector_id_for_row($row): string {
+    public static function vector_id_for_row($row, ?array $chunk_meta = null): string {
         $url = (string) ($row->source_url ?? '');
-        if ($url !== '') return md5($url);
+        if ($url !== '') {
+            $base = md5($url);
+            if ($chunk_meta !== null && !empty($chunk_meta['is_chunked'])) {
+                return $base . '_chunk_' . (int) ($chunk_meta['chunk_index'] ?? 0);
+            }
+            return $base;
+        }
         return 'mxchat_kb_' . (int) ($row->id ?? 0);
+    }
+
+    /**
+     * Parse mxchat's chunked-content JSON prefix. mxchat-basic 2.5+ stores
+     * chunks in the WP KB table as
+     *   {"document_type":"chunked","chunk_index":N,"total_chunks":M,...}\n---\n<text>
+     * (see MxChat_Chunker::format_chunk_for_storage / parse_stored_chunk).
+     *
+     * Without this detection, the bulk MySQL sync would write every chunk of
+     * the same URL into the same vector_id (md5(url)) and silently keep only
+     * the last chunk inserted — data loss for any KB built by an mxchat
+     * install that ran in WP-DB-only mode (i.e. no Pinecone) at any point.
+     *
+     * Returns a normalised shape with text body separated from chunk-metadata.
+     * For non-chunked content the returned text equals the input.
+     *
+     * @return array{is_chunked:bool, chunk_index:?int, total_chunks:?int, text:string}
+     */
+    public static function parse_chunk_prefix(string $content): array {
+        // Cheap exit for the common non-chunked case (~all rows in installs
+        // that never enabled the chunker).
+        if (strncmp($content, '{"document_type"', 16) !== 0) {
+            return ['is_chunked' => false, 'chunk_index' => null, 'total_chunks' => null, 'text' => $content];
+        }
+        $sep = strpos($content, "\n---\n");
+        if ($sep === false) {
+            return ['is_chunked' => false, 'chunk_index' => null, 'total_chunks' => null, 'text' => $content];
+        }
+        $meta = json_decode(substr($content, 0, $sep), true);
+        if (!is_array($meta) || ($meta['document_type'] ?? '') !== 'chunked') {
+            return ['is_chunked' => false, 'chunk_index' => null, 'total_chunks' => null, 'text' => $content];
+        }
+        return [
+            'is_chunked'   => true,
+            'chunk_index'  => isset($meta['chunk_index']) ? (int) $meta['chunk_index'] : 0,
+            'total_chunks' => isset($meta['total_chunks']) ? (int) $meta['total_chunks'] : 1,
+            'text'         => substr($content, $sep + 5),
+        ];
     }
 
     /**
@@ -572,17 +669,24 @@ class MxChat_DuckDB_Mysql_Sync {
 
         $bot_id = (string) apply_filters('mxchat_duckdb_sync_bot_id', $bot_id, $row);
 
+        // Peel the chunked-content prefix so chunk_index / total_chunks /
+        // is_chunked are correctly propagated and the stored `content`
+        // doesn't carry the JSON header (which would pollute the LLM
+        // context). vector_id derives from the same parse so each chunk
+        // lands in its own row.
+        $chunk_meta = self::parse_chunk_prefix((string) $row->article_content);
+
         return [
-            'vector_id'        => self::vector_id_for_row($row),
+            'vector_id'        => self::vector_id_for_row($row, $chunk_meta),
             'bot_id'           => $bot_id ?: 'default',
             'embedding'        => $embedding,
-            'content'          => (string) $row->article_content,
+            'content'          => $chunk_meta['text'],
             'source_url'       => (string) ($row->source_url ?? ''),
             'role_restriction' => (string) ($row->role_restriction ?? 'public'),
             'content_type'     => (string) ($row->content_type ?? 'content'),
-            'chunk_index'      => null,
-            'total_chunks'     => null,
-            'is_chunked'       => false,
+            'chunk_index'      => $chunk_meta['chunk_index'],
+            'total_chunks'     => $chunk_meta['total_chunks'],
+            'is_chunked'       => $chunk_meta['is_chunked'],
         ];
     }
 }

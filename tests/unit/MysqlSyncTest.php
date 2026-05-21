@@ -122,6 +122,115 @@ final class MysqlSyncTest extends TestCase {
         $this->assertSame(1, (int) $opts['last_sync_count']);
     }
 
+    // ─── parse_chunk_prefix ──────────────────────────────────────────────
+
+    public function test_parse_chunk_prefix_returns_unchanged_text_when_no_prefix(): void {
+        $out = MxChat_DuckDB_Mysql_Sync::parse_chunk_prefix('plain content without prefix');
+        $this->assertFalse($out['is_chunked']);
+        $this->assertNull($out['chunk_index']);
+        $this->assertNull($out['total_chunks']);
+        $this->assertSame('plain content without prefix', $out['text']);
+    }
+
+    public function test_parse_chunk_prefix_extracts_metadata_and_body_for_chunked_row(): void {
+        $meta = json_encode([
+            'document_type'   => 'chunked',
+            'chunk_index'     => 2,
+            'total_chunks'    => 5,
+            'source_url'      => 'https://x.test/post',
+            'parent_url_hash' => 'abc',
+        ]);
+        $content = $meta . "\n---\n" . 'this is the third chunk body';
+
+        $out = MxChat_DuckDB_Mysql_Sync::parse_chunk_prefix($content);
+        $this->assertTrue($out['is_chunked']);
+        $this->assertSame(2, $out['chunk_index']);
+        $this->assertSame(5, $out['total_chunks']);
+        $this->assertSame('this is the third chunk body', $out['text'],
+            'stored content must be stripped of the JSON header');
+    }
+
+    public function test_parse_chunk_prefix_tolerates_malformed_json(): void {
+        // Header claims to be chunked but JSON is truncated — treat as
+        // non-chunked rather than crashing or fabricating chunk metadata.
+        $out = MxChat_DuckDB_Mysql_Sync::parse_chunk_prefix('{"document_type":"chu...');
+        $this->assertFalse($out['is_chunked']);
+        $this->assertNull($out['chunk_index']);
+    }
+
+    public function test_parse_chunk_prefix_ignores_prefix_without_separator(): void {
+        // Has the JSON-prefix marker but no `\n---\n` — body unrecoverable;
+        // safer to treat the whole thing as plain text than to mis-parse.
+        $out = MxChat_DuckDB_Mysql_Sync::parse_chunk_prefix('{"document_type":"chunked"}no separator here');
+        $this->assertFalse($out['is_chunked']);
+    }
+
+    public function test_vector_id_for_row_chunked_uses_md5_with_chunk_suffix(): void {
+        // Aligned with MxChat_Chunker::generate_chunk_vector_id().
+        $row = (object) ['id' => 1, 'source_url' => 'https://x.test/post'];
+        $base = md5('https://x.test/post');
+
+        $id_chunk0 = MxChat_DuckDB_Mysql_Sync::vector_id_for_row($row, [
+            'is_chunked' => true, 'chunk_index' => 0, 'total_chunks' => 3, 'text' => '',
+        ]);
+        $id_chunk2 = MxChat_DuckDB_Mysql_Sync::vector_id_for_row($row, [
+            'is_chunked' => true, 'chunk_index' => 2, 'total_chunks' => 3, 'text' => '',
+        ]);
+        $id_plain  = MxChat_DuckDB_Mysql_Sync::vector_id_for_row($row);
+
+        $this->assertSame($base . '_chunk_0', $id_chunk0);
+        $this->assertSame($base . '_chunk_2', $id_chunk2);
+        $this->assertSame($base, $id_plain,
+            'non-chunked rows keep the bare md5(url) — no _chunk_ suffix');
+    }
+
+    // ─── Full sync — chunk-prefixed rows preserve chunk identity ─────────
+
+    public function test_full_sync_writes_each_chunk_to_its_own_vector_id(): void {
+        $url = 'https://x.test/big-post';
+        $base = md5($url);
+        $meta_for = static fn(int $i, int $total) => json_encode([
+            'document_type'   => 'chunked',
+            'chunk_index'     => $i,
+            'total_chunks'    => $total,
+            'source_url'      => $url,
+            'parent_url_hash' => $base,
+        ]);
+
+        $rows = [
+            (object) ['id' => 10, 'source_url' => $url,
+                      'article_content' => $meta_for(0, 3) . "\n---\nfirst chunk body",
+                      'embedding_vector' => serialize([0.1, 0.2, 0.3]),
+                      'role_restriction' => 'public', 'content_type' => 'post'],
+            (object) ['id' => 11, 'source_url' => $url,
+                      'article_content' => $meta_for(1, 3) . "\n---\nsecond chunk body",
+                      'embedding_vector' => serialize([0.4, 0.5, 0.6]),
+                      'role_restriction' => 'public', 'content_type' => 'post'],
+            (object) ['id' => 12, 'source_url' => $url,
+                      'article_content' => $meta_for(2, 3) . "\n---\nthird chunk body",
+                      'embedding_vector' => serialize([0.7, 0.8, 0.9]),
+                      'role_restriction' => 'public', 'content_type' => 'post'],
+        ];
+        $this->wpdb->set_response('SELECT COUNT(*)', 3);
+        $this->wpdb->set_response('SELECT id, url AS source_url', $rows);
+
+        $count = (new MxChat_DuckDB_Mysql_Sync())->full_sync();
+        $this->assertSame(3, $count, 'every chunk must round-trip into its own row');
+
+        $log = implode("\n", $this->mock_conn->log);
+        // Each chunk gets a distinct vector_id; without chunk detection the
+        // previous implementation collapsed all three into md5(url).
+        $this->assertStringContainsString("'{$base}_chunk_0'", $log);
+        $this->assertStringContainsString("'{$base}_chunk_1'", $log);
+        $this->assertStringContainsString("'{$base}_chunk_2'", $log);
+        // The JSON header must NOT reach the stored content.
+        $this->assertStringNotContainsString('document_type', $log,
+            'the chunk-metadata JSON header pollutes the LLM context if it leaks into content');
+        // Stored body matches what comes after `\n---\n`.
+        $this->assertStringContainsString("'first chunk body'", $log);
+        $this->assertStringContainsString("'second chunk body'", $log);
+    }
+
     public function test_full_sync_propagates_bot_id_when_column_exists(): void {
         // Use 'SHOW COLUMNS FROM' as the pattern — unique to detect_kb_columns
         // and doesn't collide with the SELECT COUNT / SELECT id queries.
@@ -434,6 +543,12 @@ final class MysqlSyncTest extends TestCase {
         $this->assertStringContainsString('INSERT OR REPLACE INTO "mxchat_vectors"', $log);
         $this->assertStringContainsString("regexp_extract_all(embedding_vector, 'd:([-0-9.eE+]+);', 1)", $log);
         $this->assertStringContainsString('::FLOAT[3]', $log, 'dim must match the options embedding_dim');
+        // Chunked-content detection: CTE peels the JSON header so chunk_index /
+        // total_chunks / is_chunked are propagated, and each chunk lands in
+        // its own `{md5(url)}_chunk_{N}` row instead of collapsing into one.
+        $this->assertStringContainsString("starts_with(COALESCE(article_content, ''), '{\"document_type\"')", $log);
+        $this->assertStringContainsString("json_extract_string(meta_json, '\$.chunk_index')", $log);
+        $this->assertStringContainsString("'_chunk_'", $log);
         // Cleanup: DETACH must run even on success.
         $this->assertStringContainsString('DETACH "mxd_wp_mysql_', $log);
 

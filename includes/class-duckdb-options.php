@@ -25,6 +25,16 @@ class MxChat_DuckDB_Options {
             // fast. Only meaningful when `mode === 'motherduck'`.
             'motherduck_mirror_enabled' => false,
             'motherduck_mirror_path'    => '',             // resolved to uploads/.../mirror.duckdb when empty
+            // Option B reach: mxchat-basic reads its Pinecone config directly
+            // from `mxchat_pinecone_addon_options` for the default bot
+            // (without the multi-bot manager loaded), bypassing the
+            // `mxchat_get_bot_pinecone_config` filter. Set this to true to
+            // shortcircuit reads of that option with our proxy config, so the
+            // companion plugin works on stock mxchat without applying the
+            // upstream patch. Explicit opt-in: writes still go to the DB, so
+            // sites already using real Pinecone don't see their settings
+            // hijacked.
+            'takeover_default_bot_pinecone' => false,
             'table_name'          => 'mxchat_vectors',
             'embedding_dim'       => 1536,
             'distance_metric'     => 'cosine',
@@ -62,6 +72,36 @@ class MxChat_DuckDB_Options {
         if (get_option(MXCHAT_DUCKDB_OPTION_KEY, null) === null) {
             update_option(MXCHAT_DUCKDB_OPTION_KEY, self::defaults(), false);
         }
+    }
+
+    /**
+     * Resolve the MotherDuck token, preferring a `MXCHAT_DUCKDB_MOTHERDUCK_TOKEN`
+     * constant defined in `wp-config.php` over the value persisted in
+     * wp_options. The constant path exists for installs whose compliance rules
+     * forbid storing secrets in the database — set it once in wp-config.php
+     * and the admin UI will detect the override and disable its own token
+     * field. Returns the empty string when neither source has a value.
+     *
+     * @return string
+     */
+    public static function resolved_motherduck_token(): string {
+        if (defined('MXCHAT_DUCKDB_MOTHERDUCK_TOKEN')) {
+            $constant_token = (string) constant('MXCHAT_DUCKDB_MOTHERDUCK_TOKEN');
+            if ($constant_token !== '') return $constant_token;
+        }
+        $opts = self::get();
+        return (string) ($opts['motherduck_token'] ?? '');
+    }
+
+    /**
+     * True iff the active MotherDuck token comes from the wp-config constant
+     * rather than the option row. Admin UI checks this to mute its own token
+     * field — editing it would have no effect while the constant override is
+     * in place.
+     */
+    public static function motherduck_token_is_from_constant(): bool {
+        if (!defined('MXCHAT_DUCKDB_MOTHERDUCK_TOKEN')) return false;
+        return ((string) constant('MXCHAT_DUCKDB_MOTHERDUCK_TOKEN')) !== '';
     }
 
     public static function default_embedded_path(): string {
@@ -163,6 +203,10 @@ class MxChat_DuckDB_Options {
         // is sanitised regardless; switching back to MotherDuck later
         // will pick up the existing value.
         $out['motherduck_mirror_path']    = isset($input['motherduck_mirror_path']) ? sanitize_text_field($input['motherduck_mirror_path']) : '';
+        // Opt-in shortcircuit of mxchat_pinecone_addon_options reads so
+        // Option B works on stock mxchat without the upstream patch and
+        // without multi-bot. Pure boolean — no shape to validate.
+        $out['takeover_default_bot_pinecone'] = !empty($input['takeover_default_bot_pinecone']);
         $mirror_requested = !empty($input['motherduck_mirror_enabled']);
         if ($mirror_requested && $out['mode'] !== 'motherduck') {
             add_settings_error(

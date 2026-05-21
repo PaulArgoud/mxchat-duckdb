@@ -344,21 +344,30 @@ class MxChat_DuckDB_Embedded_Connection implements MxChat_DuckDB_Connection {
     private static function is_transient_error(\Throwable $e): bool {
         // Signal 1: exception type. Different DuckDB PHP bindings + curl
         // wrappers expose different transient hierarchies; we match the
-        // ones documented at the time of writing and stay tolerant of
-        // missing types via class_exists + is_a.
+        // ones documented at the time of writing.
+        //
+        // Build $hierarchy = {class + all ancestors} once and check
+        // membership against the known-transient class names. The previous
+        // implementation used `is_a($e, $cls)` (string-class form), which
+        // forced PHPStan to short-circuit both branches to "always false"
+        // because the DuckDB/Saturio extension types aren't in any stub
+        // package — the dedicated ignoreErrors entry has been removed too.
+        $hierarchy = class_parents($e) ?: [];
+        $hierarchy[get_class($e)] = get_class($e);
+
         $transient_classes = [
             'DuckDB\\Exception\\NetworkException',
             'DuckDB\\Exception\\TimeoutException',
             'Saturio\\DuckDB\\Exception\\ConnectionException',
         ];
         foreach ($transient_classes as $cls) {
-            if (class_exists($cls, false) && is_a($e, $cls)) return true;
+            if (isset($hierarchy[$cls])) return true;
         }
         // PDOException needs SQLSTATE-aware filtering — only 08xxx
         // (connection exception) and 40001 (serialization failure) are
         // worth retrying; integrity errors (23000), syntax errors, etc.
         // are caller bugs that retries can't fix.
-        if (class_exists('PDOException', false) && is_a($e, 'PDOException')) {
+        if (isset($hierarchy['PDOException'])) {
             $sqlstate = self::pdo_sqlstate($e);
             if ($sqlstate !== '' && (str_starts_with($sqlstate, '08') || $sqlstate === '40001')) {
                 return true;

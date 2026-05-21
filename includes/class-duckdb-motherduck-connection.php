@@ -24,7 +24,16 @@ class MxChat_DuckDB_MotherDuck_Connection extends MxChat_DuckDB_Embedded_Connect
     private string $md_database;
 
     public function __construct(array $opts) {
-        $token = (string) ($opts['motherduck_token'] ?? '');
+        // Prefer a wp-config.php constant override (MXCHAT_DUCKDB_MOTHERDUCK_TOKEN)
+        // over the persisted option, so compliance-bound installs don't have to
+        // store the token in wp_options. The caller can still pass an explicit
+        // token via $opts['motherduck_token']; constant wins if present.
+        $token = class_exists('MxChat_DuckDB_Options')
+            ? MxChat_DuckDB_Options::resolved_motherduck_token()
+            : (string) ($opts['motherduck_token'] ?? '');
+        if ($token === '' && !empty($opts['motherduck_token'])) {
+            $token = (string) $opts['motherduck_token'];
+        }
         $database = (string) ($opts['motherduck_database'] ?? 'my_db');
 
         if ($token === '') {

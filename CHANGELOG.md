@@ -32,6 +32,126 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.11.0] — 2026-05-21
+
+Hardening + ergonomics pass triggered by a senior-review of the v0.10.1
+codebase. Two real bugs were uncovered (one silent data-loss path; one
+CI / dev-tooling outage), three rough edges were sanded (default-bot
+Option B reach, MotherDuck secret hygiene, alpha→beta status), and the
+upstream-patch story now ships a ready-to-apply unified diff. No schema
+migration. Safe drop-in from 0.10.1; one new option default-off
+(`takeover_default_bot_pinecone`), one optional new constant
+(`MXCHAT_DUCKDB_MOTHERDUCK_TOKEN`).
+
+### Fixed
+
+- **Silent data loss on `wp mxchat-duckdb sync` for installs with
+  chunked WP-DB rows.** mxchat-basic 2.5+ stores chunked content in
+  `wp_mxchat_system_prompt_content` with a JSON-prefix header
+  (`{"document_type":"chunked",...}\n---\n<text>`, one row per chunk).
+  Both sync paths in this plugin — the PHP one (`row_to_vector`) and
+  the native-DuckDB one (`full_sync_native`) — hashed every row to
+  `md5(source_url)` and lost the chunk_index, so `INSERT OR REPLACE`
+  collapsed all chunks of the same URL into a single vector containing
+  only the last chunk's text. The fix peels the JSON header,
+  propagates `chunk_index` / `total_chunks` / `is_chunked` correctly,
+  and writes each chunk under `{md5(url)}_chunk_{N}` to mirror
+  mxchat-basic's own `MxChat_Chunker::generate_chunk_vector_id()`
+  convention. New `MxChat_DuckDB_Mysql_Sync::parse_chunk_prefix()`
+  helper is the single source of truth; `vector_id_for_row()` now
+  takes an optional `$chunk_meta` second arg. The native-SQL path uses
+  a 3-stage CTE (`src` → `parsed` → `enriched`) with
+  `json_extract_string` to do the same work server-side.
+- **Local PHPUnit + PHPStan (and likely the CI test job) were silently
+  exiting before running.** `includes/class-duckdb-cli.php` was listed
+  in composer's `"files"` autoload, and its conventional WP safety
+  guard (`if (!defined('ABSPATH')) { exit; }`) silently terminated the
+  process with status 0 whenever `vendor/autoload.php` was loaded
+  outside WordPress. The file is now classmap-autoloaded only; the
+  composer branch of `mxchat-duckdb.php` requires it explicitly under
+  the WP_CLI guard, mirroring the manual-fallback branch. CI green is
+  finally meaningful — and the local `vendor/bin/phpunit` invocation
+  now works without any `auto_prepend_file` workaround.
+
+### Added
+
+- **`pre_option_mxchat_pinecone_addon_options` shortcircuit** for
+  Option B on the default bot. mxchat-basic reads its Pinecone config
+  straight from `wp_options` for `bot_id === 'default'` when the
+  Multi-Bot Manager isn't loaded
+  (class-mxchat-integrator.php:1960 / class-pinecone-manager.php:1238
+  in 3.2.6), bypassing the `mxchat_get_bot_pinecone_config` filter
+  this plugin uses to advertise itself. The new WP-canonical
+  `pre_option_*` filter intercepts that read without touching the DB
+  row, so Option B reaches the default bot transparently. Explicit
+  opt-in via a new option `takeover_default_bot_pinecone` (default
+  off) — sites running real Pinecone alongside DuckDB on the default
+  bot don't get their settings hijacked. Re-entry-protected so the
+  call to `get_or_create_token_for()` (which reads our own option)
+  doesn't loop back through the filter. Admin checkbox lives in the
+  Activation section with a description spelling out when not to
+  enable it.
+- **`MXCHAT_DUCKDB_MOTHERDUCK_TOKEN` constant override** for the
+  MotherDuck token. Defining it in `wp-config.php` makes the plugin
+  prefer the constant value over the persisted option — for
+  compliance-driven installs that forbid storing secrets in
+  `wp_options`. New `MxChat_DuckDB_Options::resolved_motherduck_token()`
+  / `motherduck_token_is_from_constant()` helpers; the
+  MotherDuck_Connection and Mirror_Bootstrap consumers go through the
+  resolver. Admin UI detects the override, disables the token field,
+  and shows a notice indicating the source.
+- **`patches/mxchat-pre-vector-query.diff`** — ready-to-apply unified
+  diff that adds the `mxchat_pre_vector_query` short-circuit filter
+  upstream. `patch -p1 < …` applies cleanly against mxchat-basic 3.2.6
+  (verified by piping a fresh copy of the integrator file through the
+  patch tool, then `php -l`-ing the result). The existing
+  patches/README.md gains a "How to apply" callout pointing at the
+  diff.
+- **`docs/BACKUP.md`** — full backup / restore runbook: what needs to
+  be backed up (and what doesn't), Parquet export + verification
+  recipe with sample `duckdb` CLI commands, filesystem-snapshot
+  alternative for Embedded mode, cross-environment move workflow
+  (Embedded ⇄ MotherDuck), explicit disaster-recovery checklist.
+  Wired into the docs table in README.md.
+
+### Changed
+
+- **Status badge `alpha` → `beta`.** With 348 unit tests, two
+  backends in production-ready shape, a sophisticated MotherDuck
+  mirror feature, and a steady release cadence (v0.3 → v0.11 in a
+  few weeks), the alpha tag was undersells the project. No code
+  change behind this.
+- **`MxChat_DuckDB_Embedded_Connection::is_transient_error()`** no
+  longer uses `is_a($e, $cls)` against runtime class names — the
+  string-class form forces PHPStan to short-circuit both branches to
+  "always false" because the DuckDB / Saturio extension classes
+  aren't in any stub package. Now uses `class_parents($e)` + the
+  class itself to build the hierarchy once and checks membership;
+  identical runtime semantics, but PHPStan tracks it correctly. The
+  dedicated `ignoreErrors` entry in phpstan.neon.dist is removed too.
+
+### Tests
+
+- 335 → 348 (+13), 1161 → 1205 assertions (+44) vs 0.10.1.
+- New `MysqlSyncTest` coverage for the chunked-content path: four
+  tests on `parse_chunk_prefix` (no-prefix passthrough, full
+  extraction, malformed-JSON tolerance, no-separator tolerance), one
+  on the chunked vector-id derivation, one full-sync round-trip
+  verifying each chunk lands in its own `{md5}_chunk_N` row with the
+  stored content stripped of the JSON header. The native-sync test
+  gained three new assertions on the CTE shape (chunk prefix detect,
+  `json_extract_string`, the `_chunk_` separator literal).
+- `PreVectorQueryTest` +3 tests for `inject_pinecone_addon_options`
+  (returns `$value` unchanged when plugin disabled, returns `$value`
+  unchanged when takeover off, returns Pinecone-shaped config with
+  scheme-stripped host + default namespace when takeover on).
+- `OptionsSanitizeTest` +2 tests for `takeover_default_bot_pinecone`
+  (default off, coerces truthy/falsy variants); +2 for
+  `resolved_motherduck_token` / `motherduck_token_is_from_constant`
+  (option fallback path; constant wins).
+
+---
+
 ## [0.10.1] — 2026-05-21
 
 Compatibility pass against **mxchat-basic 3.2.6** (released a few days

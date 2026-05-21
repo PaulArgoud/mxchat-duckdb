@@ -1,14 +1,14 @@
 # MxChat DuckDB / MotherDuck
 
 <p align="left">
-  <a href="#"><img alt="Plugin version" src="https://img.shields.io/badge/version-0.10.1-blue.svg"></a>
+  <a href="#"><img alt="Plugin version" src="https://img.shields.io/badge/version-0.11.0-blue.svg"></a>
   <a href="#"><img alt="PHP" src="https://img.shields.io/badge/php-%E2%89%A5%208.0-777BB4.svg?logo=php&logoColor=white"></a>
   <a href="#"><img alt="WordPress" src="https://img.shields.io/badge/wordpress-%E2%89%A5%206.0-21759B.svg?logo=wordpress&logoColor=white"></a>
   <a href="https://mxchat.ai/"><img alt="MxChat" src="https://img.shields.io/badge/mxchat-%E2%89%A5%203.2.5-2c3e50.svg"></a>
   <a href="https://duckdb.org/"><img alt="DuckDB" src="https://img.shields.io/badge/duckdb-VSS-FFF000.svg?logo=duckdb&logoColor=black"></a>
   <a href="https://motherduck.com/"><img alt="MotherDuck" src="https://img.shields.io/badge/motherduck-supported-FFD400.svg"></a>
   <a href="https://www.gnu.org/licenses/gpl-2.0.html"><img alt="License: GPL v2+" src="https://img.shields.io/badge/license-GPL%20v2%2B-green.svg"></a>
-  <a href="#"><img alt="Status: alpha" src="https://img.shields.io/badge/status-alpha-orange.svg"></a>
+  <a href="#"><img alt="Status: beta" src="https://img.shields.io/badge/status-beta-yellow.svg"></a>
   <a href="https://github.com/paulargoud/mxchat-duckdb/actions/workflows/ci.yml"><img alt="CI" src="https://github.com/paulargoud/mxchat-duckdb/actions/workflows/ci.yml/badge.svg"></a>
 </p>
 
@@ -109,6 +109,7 @@ Then activate **MxChat DuckDB / MotherDuck** in the WordPress plugins screen (af
 | [docs/CLI.md](docs/CLI.md) | Full `wp mxchat-duckdb` reference with sample output. |
 | [docs/USAGE.md](docs/USAGE.md) | Howtos: async reprocess, Pinecone migration, Parquet backup/restore, INT8 quantization, `/health` endpoint, end-to-end verification. |
 | [docs/MIRROR.md](docs/MIRROR.md) | Local mirror for MotherDuck installs (v0.10.0+): when to enable, status states, troubleshooting, WP-CLI commands, disk + cost considerations. |
+| [docs/BACKUP.md](docs/BACKUP.md) | Backup + restore workflow (Parquet export, filesystem snapshot, cross-environment moves, disaster-recovery checklist). |
 | [CHANGELOG.md](CHANGELOG.md) | Release history. |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | How to file a bug, send a PR, run the test suite. |
 

@@ -14,7 +14,21 @@ The filter follows WordPress core's `pre_*` short-circuit convention (the same
 pattern used by `pre_get_posts`, `pre_user_query`, `pre_option_*`): return
 `null` for default behaviour, return a value to bypass the rest of the function.
 
-## What to change
+## How to apply
+
+A ready-to-apply unified diff lives next to this file:
+[`mxchat-pre-vector-query.diff`](mxchat-pre-vector-query.diff). From a checkout
+of mxchat-basic 3.2.6:
+
+```bash
+cd path/to/mxchat-basic
+patch -p1 < /path/to/mxchat-duckdb/patches/mxchat-pre-vector-query.diff
+```
+
+Verified to apply cleanly against mxchat-basic 3.2.6. The patch only touches
+`includes/class-mxchat-integrator.php` and adds ~14 lines.
+
+## What it changes
 
 File: `mxchat-basic/includes/class-mxchat-integrator.php`
 
