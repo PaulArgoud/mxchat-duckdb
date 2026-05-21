@@ -1,7 +1,7 @@
 # MxChat DuckDB / MotherDuck
 
 <p align="left">
-  <a href="#"><img alt="Plugin version" src="https://img.shields.io/badge/version-0.10.0-blue.svg"></a>
+  <a href="#"><img alt="Plugin version" src="https://img.shields.io/badge/version-0.10.1-blue.svg"></a>
   <a href="#"><img alt="PHP" src="https://img.shields.io/badge/php-%E2%89%A5%208.0-777BB4.svg?logo=php&logoColor=white"></a>
   <a href="#"><img alt="WordPress" src="https://img.shields.io/badge/wordpress-%E2%89%A5%206.0-21759B.svg?logo=wordpress&logoColor=white"></a>
   <a href="https://mxchat.ai/"><img alt="MxChat" src="https://img.shields.io/badge/mxchat-%E2%89%A5%203.2.5-2c3e50.svg"></a>

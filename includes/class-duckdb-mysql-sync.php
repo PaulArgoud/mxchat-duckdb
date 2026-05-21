@@ -319,36 +319,46 @@ class MxChat_DuckDB_Mysql_Sync {
      * capability ourselves instead of relying on mxchat's check running after
      * — defense in depth against priority changes upstream.
      *
-     * Two nonces are accepted:
-     *   - `mxchat_delete_pinecone_prompt` — mxchat's own, sent by current
-     *     versions when the user clicks Delete in the KB admin.
-     *   - `mxchat_duckdb_admin` — this plugin's, used as a graceful fallback
-     *     for installs where mxchat's UI doesn't ship the delete nonce yet.
+     * mxchat-basic exposes two delete paths and the nonce travels differently
+     * in each:
      *
-     * Why this is safe even though `mxchat_duckdb_admin` is used elsewhere for
-     * non-destructive AJAX (test connection, stats, …): every nonce check is
-     * AND-ed with `current_user_can('manage_options')` on the very next line,
-     * and every other endpoint that mints / consumes the `mxchat_duckdb_admin`
-     * nonce also gates on `manage_options`. So an attacker who somehow has
-     * this nonce already has admin capability — at which point they can
-     * trigger destructive endpoints directly. The dual-nonce only widens the
-     * legitimate-caller set, not the attack surface.
+     *   - `wp_ajax_mxchat_delete_pinecone_prompt` (the JS-driven Delete button):
+     *     POST `nonce` field, action key `mxchat_delete_pinecone_prompt_nonce`.
+     *     See admin/class-knowledge-manager.php in mxchat-basic 3.2.6
+     *     (check_ajax_referer at line ~5985).
+     *   - `admin_post_mxchat_delete_pinecone_prompt` (form-style fallback):
+     *     GET `_wpnonce`, same action key `mxchat_delete_pinecone_prompt_nonce`
+     *     (wp_verify_nonce at line ~5928 of the same file).
+     *
+     * Two additional action names are accepted as fallbacks:
+     *   - `mxchat_delete_pinecone_prompt` — the legacy name this handler used
+     *     to check; kept so installs that ever shipped a custom integration
+     *     against the bare hook name keep working.
+     *   - `mxchat_duckdb_admin` — this plugin's own admin nonce, used as a
+     *     graceful fallback for installs where mxchat's UI doesn't ship a
+     *     delete-specific nonce.
+     *
+     * Why accepting `mxchat_duckdb_admin` is safe even though it's used
+     * elsewhere for non-destructive AJAX (test connection, stats, …): every
+     * nonce check is AND-ed with `current_user_can('manage_options')` on the
+     * very next line, and every other endpoint that mints / consumes the
+     * `mxchat_duckdb_admin` nonce also gates on `manage_options`. So an
+     * attacker who somehow has this nonce already has admin capability — at
+     * which point they can trigger destructive endpoints directly. The
+     * dual-nonce only widens the legitimate-caller set, not the attack
+     * surface.
      */
     public function cascade_delete_handler(): void {
-        $opts = MxChat_DuckDB_Options::get();
-        if (empty($opts['enabled'])) return;
+        if (!$this->authorize_cascade([
+            'mxchat_delete_pinecone_prompt_nonce',
+            'mxchat_delete_pinecone_prompt',
+            'mxchat_duckdb_admin',
+        ])) return;
 
-        $nonce = isset($_POST['_wpnonce']) ? (string) wp_unslash($_POST['_wpnonce']) : '';
-        $nonce_ok = $nonce !== '' && (
-            wp_verify_nonce($nonce, 'mxchat_delete_pinecone_prompt')
-            || wp_verify_nonce($nonce, 'mxchat_duckdb_admin')
-        );
-        if (!$nonce_ok || !current_user_can('manage_options')) {
-            return;
-        }
-
-        $vector_id = isset($_POST['vector_id']) ? sanitize_text_field(wp_unslash($_POST['vector_id'])) : '';
-        $bot_id    = isset($_POST['bot_id']) ? sanitize_text_field(wp_unslash($_POST['bot_id'])) : 'default';
+        $vector_id = isset($_POST['vector_id']) ? sanitize_text_field(wp_unslash($_POST['vector_id']))
+                   : (isset($_GET['vector_id']) ? sanitize_text_field(wp_unslash($_GET['vector_id'])) : '');
+        $bot_id    = isset($_POST['bot_id'])    ? sanitize_text_field(wp_unslash($_POST['bot_id']))
+                   : (isset($_GET['bot_id'])    ? sanitize_text_field(wp_unslash($_GET['bot_id']))    : 'default');
 
         if (empty($vector_id)) return;
 
@@ -358,6 +368,132 @@ class MxChat_DuckDB_Mysql_Sync {
         } catch (\Throwable $e) {
             MxChat_DuckDB_Options::update(['last_error' => 'cascade delete: ' . $e->getMessage()]);
         }
+    }
+
+    /**
+     * Mirror of mxchat-basic 3.2.6's `ajax_mxchat_delete_chunks_by_url`. When
+     * `data_source === 'pinecone'`, mxchat issues a `/vectors/list` + batch
+     * `/vectors/delete` against the configured Pinecone host. If that host is
+     * our proxy (Option B), the proxy handles the DuckDB delete itself; if
+     * it's real Pinecone, we need this cascade to keep DuckDB in sync.
+     *
+     * The `data_source === 'wordpress'` branch is a no-op on our side —
+     * mxchat deletes its own rows directly; our incremental sync will
+     * notice the gap on its next tick.
+     *
+     * Nonce contract: POST `nonce` + action `mxchat_delete_chunks_nonce`
+     * (admin/class-knowledge-manager.php in mxchat-basic 3.2.6 line ~6042).
+     */
+    public function cascade_delete_chunks_by_url(): void {
+        if (!$this->authorize_cascade([
+            'mxchat_delete_chunks_nonce',
+            'mxchat_duckdb_admin',
+        ])) return;
+
+        $data_source = isset($_POST['data_source']) ? sanitize_text_field(wp_unslash($_POST['data_source'])) : 'wordpress';
+        if ($data_source !== 'pinecone') return;
+
+        $source_url = isset($_POST['source_url']) ? esc_url_raw(wp_unslash($_POST['source_url'])) : '';
+        $bot_id     = isset($_POST['bot_id'])     ? sanitize_text_field(wp_unslash($_POST['bot_id'])) : 'default';
+        if ($source_url === '') return;
+
+        try {
+            $store = new MxChat_DuckDB_Vector_Store();
+            // delete_by_source_url covers both the base (single, non-chunked)
+            // row AND every `{md5(url)}_chunk_N` row — they all share the same
+            // source_url column in our schema.
+            $store->delete_by_source_url($source_url, $bot_id);
+        } catch (\Throwable $e) {
+            MxChat_DuckDB_Options::update(['last_error' => 'cascade chunks delete: ' . $e->getMessage()]);
+        }
+    }
+
+    /**
+     * Mirror of mxchat-basic 3.2.6's `ajax_mxchat_bulk_delete_knowledge`. The
+     * caller posts an `entries` array where each entry has
+     *   { id, source: 'pinecone'|'wordpress', sourceUrl?, isGroup? }
+     * We process only the pinecone-sourced entries; group entries map to
+     * delete_by_source_url (chunk-aware), singleton entries map to
+     * delete_by_ids([id]) — same vector-id scheme as mxchat itself uses.
+     *
+     * Nonce contract: POST `nonce` + action `mxchat_bulk_delete_knowledge_nonce`
+     * (admin/class-knowledge-manager.php in mxchat-basic 3.2.6 line ~6251).
+     */
+    public function cascade_bulk_delete(): void {
+        if (!$this->authorize_cascade([
+            'mxchat_bulk_delete_knowledge_nonce',
+            'mxchat_duckdb_admin',
+        ])) return;
+
+        $entries = $_POST['entries'] ?? [];
+        if (!is_array($entries) || $entries === []) return;
+
+        $bot_id = isset($_POST['bot_id']) ? sanitize_text_field(wp_unslash($_POST['bot_id'])) : 'default';
+
+        $ids_to_delete = [];
+        $urls_to_delete = [];
+
+        foreach ($entries as $entry) {
+            if (!is_array($entry)) continue;
+            $source = isset($entry['source']) ? sanitize_text_field((string) $entry['source']) : 'wordpress';
+            if ($source !== 'pinecone') continue;
+
+            $entry_id = isset($entry['id']) ? sanitize_text_field((string) $entry['id']) : '';
+            // mxchat sends `isGroup` as bool OR the literal string 'true'.
+            $is_group = isset($entry['isGroup']) && ($entry['isGroup'] === true || $entry['isGroup'] === 'true');
+            $source_url = isset($entry['sourceUrl']) ? esc_url_raw((string) $entry['sourceUrl']) : '';
+
+            if ($is_group && $source_url !== '') {
+                $urls_to_delete[] = $source_url;
+            } elseif ($entry_id !== '') {
+                $ids_to_delete[] = $entry_id;
+            }
+        }
+
+        if ($ids_to_delete === [] && $urls_to_delete === []) return;
+
+        try {
+            $store = new MxChat_DuckDB_Vector_Store();
+            if ($ids_to_delete !== []) {
+                $store->delete_by_ids(array_values(array_unique($ids_to_delete)), $bot_id);
+            }
+            foreach (array_unique($urls_to_delete) as $url) {
+                $store->delete_by_source_url($url, $bot_id);
+            }
+        } catch (\Throwable $e) {
+            MxChat_DuckDB_Options::update(['last_error' => 'cascade bulk delete: ' . $e->getMessage()]);
+        }
+    }
+
+    /**
+     * Shared nonce + capability gate for cascade-delete handlers. Reads the
+     * nonce from whichever field mxchat's UI happens to populate (POST
+     * `nonce` for AJAX, POST/GET `_wpnonce` for form-style fallbacks) and
+     * accepts any of the given action names. Always ANDs with
+     * `current_user_can('manage_options')` — see the `cascade_delete_handler`
+     * docblock for why this remains safe with the plugin's own admin nonce in
+     * the accepted list.
+     *
+     * @param string[] $accepted_actions  Nonce action names that authorise the request.
+     */
+    private function authorize_cascade(array $accepted_actions): bool {
+        $opts = MxChat_DuckDB_Options::get();
+        if (empty($opts['enabled'])) return false;
+
+        $nonce = '';
+        foreach (['nonce', '_wpnonce'] as $field) {
+            if (isset($_POST[$field])) { $nonce = (string) wp_unslash($_POST[$field]); break; }
+            if (isset($_GET[$field]))  { $nonce = (string) wp_unslash($_GET[$field]);  break; }
+        }
+        if ($nonce === '') return false;
+
+        $nonce_ok = false;
+        foreach ($accepted_actions as $action) {
+            if (wp_verify_nonce($nonce, $action)) { $nonce_ok = true; break; }
+        }
+        if (!$nonce_ok) return false;
+
+        return current_user_can('manage_options');
     }
 
     /**

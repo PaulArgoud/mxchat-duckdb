@@ -176,6 +176,7 @@ final class MysqlSyncTest extends TestCase {
 
     public function test_cascade_delete_rejects_request_with_no_nonce(): void {
         $_POST = ['vector_id' => 'vec_to_delete'];
+        $_GET  = [];
         (new MxChat_DuckDB_Mysql_Sync())->cascade_delete_handler();
 
         $this->assertEmpty($this->mock_conn->log,
@@ -184,6 +185,7 @@ final class MysqlSyncTest extends TestCase {
 
     public function test_cascade_delete_rejects_request_with_wrong_nonce(): void {
         $_POST = ['_wpnonce' => 'bogus', 'vector_id' => 'vec_to_delete'];
+        $_GET  = [];
         (new MxChat_DuckDB_Mysql_Sync())->cascade_delete_handler();
 
         $this->assertEmpty($this->mock_conn->log);
@@ -191,17 +193,22 @@ final class MysqlSyncTest extends TestCase {
 
     public function test_cascade_delete_rejects_user_without_capability(): void {
         $GLOBALS['__test_current_user_can'] = false;
-        $GLOBALS['__test_valid_nonces'] = ['legit' => 'mxchat_delete_pinecone_prompt'];
-        $_POST = ['_wpnonce' => 'legit', 'vector_id' => 'vec_to_delete'];
+        $GLOBALS['__test_valid_nonces'] = ['legit' => 'mxchat_delete_pinecone_prompt_nonce'];
+        $_POST = ['nonce' => 'legit', 'vector_id' => 'vec_to_delete'];
+        $_GET  = [];
 
         (new MxChat_DuckDB_Mysql_Sync())->cascade_delete_handler();
         $this->assertEmpty($this->mock_conn->log,
             'capability check must run AND short-circuit');
     }
 
-    public function test_cascade_delete_accepts_mxchat_nonce_and_fires_delete(): void {
-        $GLOBALS['__test_valid_nonces'] = ['legit' => 'mxchat_delete_pinecone_prompt'];
-        $_POST = ['_wpnonce' => 'legit', 'vector_id' => 'vec_42', 'bot_id' => 'support_fr'];
+    public function test_cascade_delete_accepts_mxchat_ajax_nonce_and_fires_delete(): void {
+        // mxchat-basic 3.2.6 AJAX path: POST `nonce` field, action key
+        // `mxchat_delete_pinecone_prompt_nonce` (admin/class-knowledge-manager.php
+        // ~line 5985).
+        $GLOBALS['__test_valid_nonces'] = ['legit' => 'mxchat_delete_pinecone_prompt_nonce'];
+        $_POST = ['nonce' => 'legit', 'vector_id' => 'vec_42', 'bot_id' => 'support_fr'];
+        $_GET  = [];
 
         (new MxChat_DuckDB_Mysql_Sync())->cascade_delete_handler();
 
@@ -211,17 +218,161 @@ final class MysqlSyncTest extends TestCase {
         $this->assertStringContainsString("'support_fr'", $log);
     }
 
+    public function test_cascade_delete_accepts_admin_post_get_path(): void {
+        // mxchat-basic 3.2.6 form fallback path: GET `_wpnonce`, same action
+        // key `mxchat_delete_pinecone_prompt_nonce` (admin/class-knowledge-manager.php
+        // ~line 5928).
+        $GLOBALS['__test_valid_nonces'] = ['legit' => 'mxchat_delete_pinecone_prompt_nonce'];
+        $_POST = [];
+        $_GET  = ['_wpnonce' => 'legit', 'vector_id' => 'vec_99'];
+
+        (new MxChat_DuckDB_Mysql_Sync())->cascade_delete_handler();
+
+        $log = implode("\n", $this->mock_conn->log);
+        $this->assertStringContainsString('DELETE FROM "mxchat_vectors"', $log);
+        $this->assertStringContainsString("'vec_99'", $log);
+    }
+
+    public function test_cascade_delete_still_accepts_legacy_bare_action_name(): void {
+        // Backward-compat: this plugin's own pre-3.2.6 docs documented the
+        // bare action name `mxchat_delete_pinecone_prompt` (without the
+        // `_nonce` suffix). Installs that built custom integrations against
+        // that name keep working.
+        $GLOBALS['__test_valid_nonces'] = ['legit' => 'mxchat_delete_pinecone_prompt'];
+        $_POST = ['_wpnonce' => 'legit', 'vector_id' => 'vec_legacy', 'bot_id' => 'default'];
+        $_GET  = [];
+
+        (new MxChat_DuckDB_Mysql_Sync())->cascade_delete_handler();
+
+        $log = implode("\n", $this->mock_conn->log);
+        $this->assertStringContainsString('DELETE FROM "mxchat_vectors"', $log);
+        $this->assertStringContainsString("'vec_legacy'", $log);
+    }
+
     public function test_cascade_delete_also_accepts_the_plugin_admin_nonce(): void {
         // The handler accepts a fallback nonce so legacy mxchat installs
         // that don't ship the delete-specific nonce keep working. See the
         // docblock in class-duckdb-mysql-sync.php for the rationale.
         $GLOBALS['__test_valid_nonces'] = ['legit' => 'mxchat_duckdb_admin'];
         $_POST = ['_wpnonce' => 'legit', 'vector_id' => 'vec_x'];
+        $_GET  = [];
 
         (new MxChat_DuckDB_Mysql_Sync())->cascade_delete_handler();
 
         $log = implode("\n", $this->mock_conn->log);
         $this->assertStringContainsString('DELETE FROM "mxchat_vectors"', $log);
+    }
+
+    // ─── cascade_delete_chunks_by_url ────────────────────────────────────
+
+    public function test_cascade_chunks_by_url_rejects_missing_nonce(): void {
+        $_POST = ['source_url' => 'https://x.test/post', 'data_source' => 'pinecone'];
+        $_GET  = [];
+        (new MxChat_DuckDB_Mysql_Sync())->cascade_delete_chunks_by_url();
+        $this->assertEmpty($this->mock_conn->log);
+    }
+
+    public function test_cascade_chunks_by_url_ignores_wordpress_data_source(): void {
+        // When mxchat's UI deletes a WP-DB entry (no Pinecone) we must NOT
+        // touch DuckDB — mxchat's own DELETE on wp_mxchat_system_prompt_content
+        // is the source of truth; our incremental sync picks up the gap.
+        $GLOBALS['__test_valid_nonces'] = ['legit' => 'mxchat_delete_chunks_nonce'];
+        $_POST = ['nonce' => 'legit', 'source_url' => 'https://x.test/post', 'data_source' => 'wordpress'];
+        $_GET  = [];
+
+        (new MxChat_DuckDB_Mysql_Sync())->cascade_delete_chunks_by_url();
+        $this->assertEmpty($this->mock_conn->log);
+    }
+
+    public function test_cascade_chunks_by_url_deletes_all_chunks_for_pinecone_source(): void {
+        $GLOBALS['__test_valid_nonces'] = ['legit' => 'mxchat_delete_chunks_nonce'];
+        $_POST = [
+            'nonce'       => 'legit',
+            'source_url'  => 'https://x.test/blog/post-42',
+            'data_source' => 'pinecone',
+            'bot_id'      => 'support_fr',
+        ];
+        $_GET = [];
+
+        (new MxChat_DuckDB_Mysql_Sync())->cascade_delete_chunks_by_url();
+
+        $log = implode("\n", $this->mock_conn->log);
+        $this->assertStringContainsString('DELETE FROM "mxchat_vectors"', $log);
+        $this->assertStringContainsString("source_url = 'https://x.test/blog/post-42'", $log);
+        $this->assertStringContainsString("bot_id = 'support_fr'", $log);
+    }
+
+    public function test_cascade_chunks_by_url_rejects_user_without_capability(): void {
+        $GLOBALS['__test_current_user_can'] = false;
+        $GLOBALS['__test_valid_nonces']     = ['legit' => 'mxchat_delete_chunks_nonce'];
+        $_POST = ['nonce' => 'legit', 'source_url' => 'https://x.test/p', 'data_source' => 'pinecone'];
+        $_GET  = [];
+
+        (new MxChat_DuckDB_Mysql_Sync())->cascade_delete_chunks_by_url();
+        $this->assertEmpty($this->mock_conn->log);
+    }
+
+    // ─── cascade_bulk_delete ──────────────────────────────────────────────
+
+    public function test_cascade_bulk_delete_rejects_missing_nonce(): void {
+        $_POST = ['entries' => [['id' => 'a', 'source' => 'pinecone']]];
+        $_GET  = [];
+        (new MxChat_DuckDB_Mysql_Sync())->cascade_bulk_delete();
+        $this->assertEmpty($this->mock_conn->log);
+    }
+
+    public function test_cascade_bulk_delete_ignores_wordpress_entries(): void {
+        $GLOBALS['__test_valid_nonces'] = ['legit' => 'mxchat_bulk_delete_knowledge_nonce'];
+        $_POST = [
+            'nonce'   => 'legit',
+            'entries' => [
+                ['id' => '7',  'source' => 'wordpress'],
+                ['id' => '12', 'source' => 'wordpress', 'sourceUrl' => 'https://x.test/p', 'isGroup' => true],
+            ],
+        ];
+        $_GET = [];
+
+        (new MxChat_DuckDB_Mysql_Sync())->cascade_bulk_delete();
+        $this->assertEmpty($this->mock_conn->log,
+            'WordPress-sourced entries are mxchat\'s responsibility, not ours');
+    }
+
+    public function test_cascade_bulk_delete_handles_singleton_and_group_entries(): void {
+        $GLOBALS['__test_valid_nonces'] = ['legit' => 'mxchat_bulk_delete_knowledge_nonce'];
+        $_POST = [
+            'nonce'   => 'legit',
+            'bot_id'  => 'default',
+            'entries' => [
+                // Singleton: the entry id IS the vector id.
+                ['id' => 'vec_singleton', 'source' => 'pinecone'],
+                // Group: chunked content — delete every row sharing the source_url.
+                ['id' => 'vec_group_parent', 'source' => 'pinecone', 'sourceUrl' => 'https://x.test/big-post', 'isGroup' => true],
+                // Mxchat sometimes serialises isGroup as the string 'true'; both must work.
+                ['id' => 'vec_group_parent2', 'source' => 'pinecone', 'sourceUrl' => 'https://x.test/other', 'isGroup' => 'true'],
+                // A wordpress entry mixed in should be ignored.
+                ['id' => '99', 'source' => 'wordpress'],
+            ],
+        ];
+        $_GET = [];
+
+        (new MxChat_DuckDB_Mysql_Sync())->cascade_bulk_delete();
+
+        $log = implode("\n", $this->mock_conn->log);
+        $this->assertStringContainsString("vector_id IN ('vec_singleton')", $log);
+        $this->assertStringContainsString("source_url = 'https://x.test/big-post'", $log);
+        $this->assertStringContainsString("source_url = 'https://x.test/other'", $log);
+        $this->assertStringNotContainsString("'99'", $log,
+            'wordpress entry id must not leak into the DELETE');
+    }
+
+    public function test_cascade_bulk_delete_rejects_user_without_capability(): void {
+        $GLOBALS['__test_current_user_can'] = false;
+        $GLOBALS['__test_valid_nonces']     = ['legit' => 'mxchat_bulk_delete_knowledge_nonce'];
+        $_POST = ['nonce' => 'legit', 'entries' => [['id' => 'a', 'source' => 'pinecone']]];
+        $_GET  = [];
+
+        (new MxChat_DuckDB_Mysql_Sync())->cascade_bulk_delete();
+        $this->assertEmpty($this->mock_conn->log);
     }
 
     // ─── full_sync_native (DuckDB-native fast path, v0.8.0+) ─────────────

@@ -32,6 +32,115 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.10.1] — 2026-05-21
+
+Compatibility pass against **mxchat-basic 3.2.6** (released a few days
+after 0.10.0). The audit covered every cross-plugin surface the
+companion plugin depends on — `MxChat_Utils` registry + `submit_content_to_db`,
+the `mxchat_get_bot_pinecone_config` + `mxchat_pre_vector_query` filters,
+the `wp_mxchat_system_prompt_content` schema, the `mxchat_options` /
+`mxchat_active_embedding_model` option keys, and every AJAX delete hook
+mxchat ships. Everything held up; the two real findings (one
+pre-existing bug surfaced by re-reading mxchat's nonce contract, one
+latent gap that became measurable in 3.2.6) are fixed below, plus
+three additive enhancements to track the new metadata aliases and the
+secondary delete paths.
+
+No schema migration. Safe drop-in from 0.10.0. No public API break.
+
+### Fixed
+
+- **Cascade-delete nonce contract.** `cascade_delete_handler` was
+  verifying `$_POST['_wpnonce']` against action
+  `mxchat_delete_pinecone_prompt`, but mxchat-basic actually mints the
+  nonce under action `mxchat_delete_pinecone_prompt_nonce` and sends it
+  via POST `nonce` on the AJAX path / GET `_wpnonce` on the
+  `admin_post_*` form path (admin/class-knowledge-manager.php in
+  mxchat-basic 3.2.6, lines ~5928 and ~5985). The handler was silently
+  no-op-ing on every legitimate delete — DuckDB drifted out of sync on
+  installs that route Pinecone calls to real Pinecone (not the proxy)
+  and rely on the cascade hook as the sole bridge. The handler now
+  reads either field and accepts both the canonical 3.2.6 action and
+  the legacy bare name, plus the existing `mxchat_duckdb_admin`
+  fallback. Pre-existing bug; the regression simply made it visible
+  during the 3.2.6 audit.
+
+### Added
+
+- **`/vectors/list` prefix filter.** mxchat-basic 3.2.2+ uses
+  `/vectors/list?prefix={md5(source_url)}_chunk_` to find every chunk
+  vector for a URL (chunk-reassembly path at
+  class-mxchat-integrator.php ~line 5845, bulk-delete at
+  class-knowledge-manager.php ~line 6321). The proxy now propagates
+  the `prefix` parameter — from JSON body OR query string — into
+  `Vector_Store::list_ids($bot_id, $limit, 0, $prefix)`, which
+  composes a `LIKE 'prefix%' ESCAPE '\'` clause with the SQL
+  wildcards `_`, `%`, and `\` properly escaped (load-bearing: the
+  `_chunk_` separator contains an underscore that is itself a LIKE
+  wildcard). Without this filter, mxchat's chunk reassembly received
+  arbitrary IDs from the namespace and either fell through to the
+  matched-chunks fallback (correct but slower) or — on bulk delete —
+  scoped to the wrong vectors. The new path is also opt-in for
+  callers: omit `prefix` and the behaviour is unchanged.
+- **Chunk-metadata alias-key fallbacks** in `handle_upsert`.
+  mxchat-basic 3.2.6 advertises AI-Engine-style aliases
+  (`source` / `part_index` / `part_total`) alongside the canonical
+  metadata keys (`source_url` / `chunk_index` / `total_chunks`) so
+  consumers of the new `mxchat_embedding_chunk_metadata` filter can
+  rely on a stable shorthand. The proxy already accepted the canonical
+  keys; it now also falls back to the aliases when the canonical key
+  is missing, so a third-party filter rewriting metadata to use only
+  the aliases doesn't lose chunk shape on the DuckDB side. Canonical
+  keys always win when both are present.
+- **Two new cascade handlers** for mxchat-basic's secondary delete
+  paths (added in 3.2.2 for chunk-aware deletion):
+  - `wp_ajax_mxchat_delete_chunks_by_url` →
+    `MxChat_DuckDB_Mysql_Sync::cascade_delete_chunks_by_url()`. Nonce:
+    `mxchat_delete_chunks_nonce`. Only fires when
+    `data_source === 'pinecone'`; routes to
+    `delete_by_source_url($url, $bot_id)`, which catches both the base
+    row and every `{md5(url)}_chunk_N` row since they share
+    `source_url`.
+  - `wp_ajax_mxchat_bulk_delete_knowledge` →
+    `MxChat_DuckDB_Mysql_Sync::cascade_bulk_delete()`. Nonce:
+    `mxchat_bulk_delete_knowledge_nonce`. Walks `entries[]`,
+    processes only `source === 'pinecone'`, routes
+    `isGroup === true` to `delete_by_source_url` and singletons to
+    `delete_by_ids`. Mixed batches and the `'true'` string form of
+    `isGroup` (mxchat's JSON serialisation quirk) are both supported.
+  Both handlers go through a new private `authorize_cascade()` helper
+  that dual-fields the nonce lookup (`nonce` / `_wpnonce`, POST or
+  GET) and accepts multiple nonce actions — same belt-and-braces
+  contract as the original handler, kept identical across the three
+  paths.
+
+### Documentation
+
+- **`patches/README.md` line numbers** refreshed for mxchat-basic 3.2.6:
+  `find_relevant_content_pinecone()` is now at ~line 5375 (was 5211),
+  the `wp_remote_post()` call to short-circuit at ~line 5451 (was
+  5287). Patch body unchanged — the surrounding function shifted
+  during mxchat's 3.1.x → 3.2.x evolution but the relevant block
+  stayed intact.
+
+### Tests
+
+- 316 → 335 (+19), 1121 → 1161 assertions (+40) vs 0.10.0.
+- New `ProxyHandlersTest` (6 tests) — locks `handle_upsert`
+  canonical-vs-alias precedence and `handle_list` prefix-forwarding
+  (JSON body + query string variants, escape behaviour).
+- `VectorStoreFacadeTest`: +3 `list_ids` tests (`%`, `_`, `\` escape
+  in prefix; empty prefix == no filter; underscore-escape regression
+  guard).
+- `MysqlSyncTest`: +10 cascade tests — three more for the corrected
+  `cascade_delete_handler` nonce contract, four for
+  `cascade_delete_chunks_by_url` (missing nonce, wordpress data
+  source ignored, pinecone path deletes, capability gate), four for
+  `cascade_bulk_delete` (missing nonce, wordpress entries ignored,
+  mixed singleton/group/`'true'`-string batch, capability gate).
+
+---
+
 ## [0.10.0] — 2026-05-20
 
 The headline feature for this cycle: a **local mirror for MotherDuck

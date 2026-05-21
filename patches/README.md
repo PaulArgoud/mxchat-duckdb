@@ -18,8 +18,10 @@ pattern used by `pre_get_posts`, `pre_user_query`, `pre_option_*`): return
 
 File: `mxchat-basic/includes/class-mxchat-integrator.php`
 
-Find the function `find_relevant_content_pinecone()` (around line 5211). Look for
-the block that calls `wp_remote_post($api_endpoint, ...)` (around line 5287).
+Find the function `find_relevant_content_pinecone()` (around line 5375 in
+mxchat-basic 3.2.6). Look for the block that calls
+`wp_remote_post($api_endpoint, ...)` (around line 5451 in 3.2.6 — the line that
+builds `https://{host}/query`).
 
 **Wrap the HTTP block in an `else` branch** preceded by the filter call:
 

@@ -222,13 +222,27 @@ class MxChat_DuckDB_Pinecone_Proxy {
     }
 
     public function handle_list(WP_REST_Request $req) {
-        $body = $req->get_json_params() ?: $req->get_query_params() ?: [];
+        // Pinecone's /vectors/list is a GET with query params; mxchat-basic
+        // 3.2.6 sends `prefix` + `limit` via either query string (the chunk-
+        // reassembly + bulk-delete code paths) or JSON body. Try both so
+        // either wire format works.
+        $body = $req->get_json_params();
+        if (!is_array($body) || $body === []) {
+            $body = $req->get_query_params() ?: [];
+        }
         $namespace = isset($body['namespace']) ? (string) $body['namespace'] : 'default';
         $limit = isset($body['limit']) ? max(1, min(1000, (int) $body['limit'])) : 100;
+        // `prefix` is how mxchat finds all chunk vectors for a URL — vector
+        // IDs are formatted `{md5(source_url)}_chunk_{index}`, so the prefix
+        // it sends ends with `_chunk_`. Without this filter we'd return
+        // unrelated IDs and the upstream `reassemble_chunks_from_pinecone`
+        // would interleave junk into the RAG context.
+        $prefix = isset($body['prefix']) ? (string) $body['prefix'] : null;
+        if ($prefix === '') $prefix = null;
 
         try {
             $ids = MxChat_DuckDB_Vector_Store::current()
-                ->list_ids($namespace ?: 'default', $limit, 0);
+                ->list_ids($namespace ?: 'default', $limit, 0, $prefix);
             return new WP_REST_Response([
                 'vectors' => array_map(fn($id) => ['id' => $id], $ids),
                 'namespace' => $namespace,
@@ -262,16 +276,24 @@ class MxChat_DuckDB_Pinecone_Proxy {
             $meta = isset($v['metadata']) && is_array($v['metadata']) ? $v['metadata'] : [];
             if ($id === '' || empty($values)) continue;
 
+            // mxchat-basic 3.2.6 added AI-Engine-style alias keys to chunk
+            // metadata (`source`/`part_index`/`part_total`) alongside the
+            // canonical (`source_url`/`chunk_index`/`total_chunks`). mxchat
+            // itself writes both, but third-party consumers of the new
+            // `mxchat_embedding_chunk_metadata` filter might write only the
+            // aliases — fall back so we don't lose chunk metadata in that case.
             $rows[] = [
                 'vector_id'        => $id,
                 'bot_id'           => $bot_id,
                 'embedding'        => $values,
                 'content'          => (string) ($meta['text'] ?? ''),
-                'source_url'       => (string) ($meta['source_url'] ?? ''),
+                'source_url'       => (string) ($meta['source_url'] ?? ($meta['source'] ?? '')),
                 'role_restriction' => (string) ($meta['role_restriction'] ?? 'public'),
                 'content_type'     => (string) ($meta['type'] ?? 'content'),
-                'chunk_index'      => isset($meta['chunk_index']) ? (int) $meta['chunk_index'] : null,
-                'total_chunks'     => isset($meta['total_chunks']) ? (int) $meta['total_chunks'] : null,
+                'chunk_index'      => isset($meta['chunk_index']) ? (int) $meta['chunk_index']
+                                    : (isset($meta['part_index']) ? (int) $meta['part_index'] : null),
+                'total_chunks'     => isset($meta['total_chunks']) ? (int) $meta['total_chunks']
+                                    : (isset($meta['part_total']) ? (int) $meta['part_total'] : null),
                 'is_chunked'       => !empty($meta['is_chunked']),
             ];
         }

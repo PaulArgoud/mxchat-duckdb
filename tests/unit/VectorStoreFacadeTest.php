@@ -175,6 +175,38 @@ final class VectorStoreFacadeTest extends TestCase {
         $this->assertStringContainsString('OFFSET 0', $sql);
         // Latest-first ordering for the admin UI list.
         $this->assertStringContainsString('ORDER BY created_at DESC', $sql);
+        // No prefix filter without an explicit prefix argument.
+        $this->assertStringNotContainsString('LIKE', $sql);
+    }
+
+    public function test_list_ids_with_prefix_emits_escaped_like_clause(): void {
+        // Vector IDs in chunked storage are formatted `{md5}_chunk_{N}`. The
+        // underscore is a SQL LIKE wildcard, so we must escape it — otherwise
+        // a prefix `abc_chunk_` would also match `abcXchunkX...`.
+        $this->mock_conn->responses['SELECT vector_id FROM'] = [['vector_id' => 'h1_chunk_0']];
+        $this->store()->list_ids('default', 100, 0, 'h1_chunk_');
+        $sql = end($this->mock_conn->log);
+
+        $this->assertStringContainsString("LIKE 'h1\\_chunk\\_%'", $sql,
+            'literal underscores in the prefix must be escaped');
+        $this->assertStringContainsString("ESCAPE '\\'", $sql,
+            'ESCAPE clause must designate backslash as the escape character');
+    }
+
+    public function test_list_ids_prefix_escapes_percent_and_backslash_too(): void {
+        $this->mock_conn->responses['SELECT vector_id FROM'] = [];
+        // % is the other LIKE wildcard; \ must be escaped so the ESCAPE
+        // sequence stays unambiguous.
+        $this->store()->list_ids('default', 10, 0, '50%off_\\path');
+        $sql = end($this->mock_conn->log);
+        $this->assertStringContainsString("LIKE '50\\%off\\_\\\\path%'", $sql);
+    }
+
+    public function test_list_ids_empty_prefix_is_treated_as_no_filter(): void {
+        $this->mock_conn->responses['SELECT vector_id FROM'] = [];
+        $this->store()->list_ids('default', 10, 0, '');
+        $sql = end($this->mock_conn->log);
+        $this->assertStringNotContainsString('LIKE', $sql);
     }
 
     public function test_fetch_by_ids_returns_pinecone_shaped_metadata_map(): void {

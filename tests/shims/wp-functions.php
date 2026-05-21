@@ -128,6 +128,13 @@ if (!function_exists('sanitize_key')) {
         return preg_replace('/[^a-z0-9_\-]/', '', $key);
     }
 }
+if (!function_exists('esc_url_raw')) {
+    // Minimal shim — the cascade-delete handlers feed this with already-
+    // structured URLs in tests, so we just normalise to a trimmed string.
+    function esc_url_raw($url) {
+        return is_scalar($url) ? trim((string) $url) : '';
+    }
+}
 if (!function_exists('wp_strip_all_tags')) {
     function wp_strip_all_tags($string, $remove_breaks = false) {
         $string = (string) $string;

@@ -287,11 +287,33 @@ class MxChat_DuckDB_Vector_Store {
         return (int) ($rows[0]['c'] ?? 0);
     }
 
-    public function list_ids(string $bot_id = 'default', int $limit = 100, int $offset = 0): array {
+    /**
+     * Paginated vector_id listing, optionally narrowed to IDs starting with a
+     * given prefix. The Pinecone-emulation proxy calls this with a prefix
+     * like `{md5(source_url)}_chunk_` so mxchat's chunk-reassembly + bulk-
+     * delete paths see the right subset instead of every ID in the
+     * namespace.
+     *
+     * The prefix is wrapped in `LIKE '<escaped>%' ESCAPE '\'` so the SQL
+     * wildcards `%` and `_` inside a caller-supplied prefix are treated
+     * literally — md5 hashes contain no wildcards in practice, but the
+     * underscore in `_chunk_` is also a SQL LIKE wildcard, so this is
+     * required for correctness, not just defence in depth.
+     */
+    public function list_ids(string $bot_id = 'default', int $limit = 100, int $offset = 0, ?string $prefix = null): array {
+        $where = sprintf('bot_id = %s', $this->literal_string($bot_id));
+        if ($prefix !== null && $prefix !== '') {
+            $escaped = strtr($prefix, [
+                '\\' => '\\\\',
+                '%'  => '\\%',
+                '_'  => '\\_',
+            ]);
+            $where .= sprintf(" AND vector_id LIKE %s ESCAPE '\\'", $this->literal_string($escaped . '%'));
+        }
         $rows = $this->conn->execute(sprintf(
-            'SELECT vector_id FROM %s WHERE bot_id = %s ORDER BY created_at DESC LIMIT %d OFFSET %d',
+            'SELECT vector_id FROM %s WHERE %s ORDER BY created_at DESC LIMIT %d OFFSET %d',
             $this->quote_ident($this->table),
-            $this->literal_string($bot_id),
+            $where,
             $limit,
             $offset
         ));

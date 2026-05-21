@@ -4,7 +4,7 @@ Tags: chatbot, ai, vector-search, duckdb, motherduck, pinecone, embeddings, rag,
 Requires at least: 6.0
 Tested up to: 6.7
 Requires PHP: 8.0
-Stable tag: 0.10.0
+Stable tag: 0.10.1
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -95,6 +95,15 @@ By default, no — your `.duckdb` file is preserved on uninstall because it may 
 4. Async reprocess progress driven by Action Scheduler.
 
 == Changelog ==
+
+= 0.10.1 =
+* Compatibility pass against mxchat-basic 3.2.6 (released a few days after 0.10.0). Audit covered every cross-plugin surface — embedding-model registry, `submit_content_to_db`, `mxchat_get_bot_pinecone_config` + `mxchat_pre_vector_query` filters, `wp_mxchat_system_prompt_content` schema, option keys, every AJAX delete hook. No schema migration. Safe drop-in from 0.10.0.
+* Fixed: `cascade_delete_handler` was verifying `$_POST['_wpnonce']` against action `mxchat_delete_pinecone_prompt`, but mxchat-basic actually mints the nonce under action `mxchat_delete_pinecone_prompt_nonce` and posts it via the `nonce` field on AJAX / GET `_wpnonce` on the admin_post form path. The handler was silently no-op-ing on every legitimate delete — DuckDB drifted out of sync on installs that route Pinecone calls to real Pinecone (not the proxy). Now reads either field and accepts both nonce-action names plus the existing `mxchat_duckdb_admin` fallback. Pre-existing bug; the 3.2.6 audit made it visible.
+* Added: `/vectors/list` accepts a `prefix` filter (JSON body or query string). `Vector_Store::list_ids()` gained an optional `?string $prefix` argument that composes a `LIKE 'prefix%' ESCAPE '\'` clause with `_`, `%`, and `\` properly escaped — load-bearing because mxchat's chunk vector IDs use `_chunk_` as separator and the underscore is a LIKE wildcard. Without this, mxchat's chunk-reassembly (class-mxchat-integrator.php ~5845) and bulk-delete (class-knowledge-manager.php ~6321) paths fell through to slower fallbacks. Opt-in for callers: omit `prefix` and behaviour is unchanged.
+* Added: chunk-metadata alias-key fallbacks in `handle_upsert`. mxchat-basic 3.2.6 advertises AI-Engine-style aliases (`source` / `part_index` / `part_total`) alongside the canonical metadata keys (`source_url` / `chunk_index` / `total_chunks`) so consumers of the new `mxchat_embedding_chunk_metadata` filter can rely on a stable shorthand. The proxy now falls back to the aliases when the canonical key is missing; canonical keys win when both are present.
+* Added: two new cascade handlers for mxchat-basic's secondary delete paths (chunk-aware deletion added in 3.2.2). `wp_ajax_mxchat_delete_chunks_by_url` → `cascade_delete_chunks_by_url()` routes to `delete_by_source_url` (catches the base row + every `{md5(url)}_chunk_N` row since they share `source_url`). `wp_ajax_mxchat_bulk_delete_knowledge` → `cascade_bulk_delete()` walks `entries[]`, processes only `source === 'pinecone'`, routes groups to `delete_by_source_url` and singletons to `delete_by_ids`. Both go through a new private `authorize_cascade()` helper that dual-fields the nonce lookup (`nonce` / `_wpnonce`, POST or GET) and accepts multiple nonce actions.
+* Docs: `patches/README.md` line numbers refreshed for mxchat-basic 3.2.6 — `find_relevant_content_pinecone()` at ~line 5375 (was 5211), `wp_remote_post()` short-circuit point at ~line 5451 (was 5287). Patch body unchanged.
+* Tests: 316 → 335 (+19), 1121 → 1161 assertions (+40). New `ProxyHandlersTest` (6 tests) locks `handle_upsert` canonical-vs-alias precedence and `handle_list` prefix-forwarding. `VectorStoreFacadeTest` +3 for `list_ids` prefix escapes; `MysqlSyncTest` +10 for the corrected cascade contract and the two new handlers.
 
 = 0.10.0 =
 * Local mirror for MotherDuck installs (headline feature). Maintains a local `.duckdb` shadow with HNSW indexed; MotherDuck stays the canonical write target; reads route to local for HNSW acceleration. Opt-in. No public API break. Safe drop-in from 0.9.0. See docs/MIRROR.md for the operator guide.
@@ -204,6 +213,9 @@ By default, no — your `.duckdb` file is preserved on uninstall because it may 
 * Initial release.
 
 == Upgrade Notice ==
+
+= 0.10.1 =
+Compatibility pass against mxchat-basic 3.2.6 (audit + two real findings fixed). Restores the cascade-delete bridge that was silently no-op-ing for every legitimate delete from mxchat's admin (DuckDB drift on real-Pinecone installs); adds chunk-aware support in `/vectors/list` (prefix filter, `LIKE` escaped) so mxchat's chunk-reassembly and bulk-delete paths route correctly; intercepts mxchat's two newer delete AJAX hooks. No schema migration. No public API break. Safe drop-in from 0.10.0.
 
 = 0.10.0 =
 Adds the local mirror for MotherDuck installs (opt-in). Maintains a local DuckDB shadow with HNSW for fast reads while MotherDuck stays the canonical write target. No schema migration. No public API break — safe drop-in from 0.9.0. MotherDuck installs with > 100k vectors should consult docs/MIRROR.md before enabling: the bootstrap pulls every row over the wire once (MotherDuck egress cost) and the mirror doubles disk usage.

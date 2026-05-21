@@ -3,7 +3,7 @@
  * Plugin Name: MxChat DuckDB / MotherDuck
  * Plugin URI: https://github.com/paulargoud/mxchat-duckdb
  * Description: Adds DuckDB (embedded) and MotherDuck (cloud) as alternative vector stores for MxChat, replacing Pinecone with an open-source, SQL-native option.
- * Version: 0.10.0
+ * Version: 0.10.1
  * Author: Paul Argoud
  * License: GPLv2 or later
  * Text Domain: mxchat-duckdb
@@ -26,7 +26,7 @@ if (!defined('ABSPATH')) {
     exit;
 }
 
-define('MXCHAT_DUCKDB_VERSION', '0.10.0');
+define('MXCHAT_DUCKDB_VERSION', '0.10.1');
 define('MXCHAT_DUCKDB_FILE', __FILE__);
 define('MXCHAT_DUCKDB_DIR', plugin_dir_path(__FILE__));
 define('MXCHAT_DUCKDB_URL', plugin_dir_url(__FILE__));

@@ -45,6 +45,13 @@ class MxChat_DuckDB_Sync {
 
         add_action('wp_ajax_mxchat_delete_pinecone_prompt', [$this, 'cascade_delete_handler'], 1);
         add_action('admin_post_mxchat_delete_pinecone_prompt', [$this, 'cascade_delete_handler'], 1);
+
+        // Newer mxchat-basic (3.2.2+) ships chunk-aware deletions through two
+        // additional AJAX endpoints. We mirror their work on the DuckDB side
+        // so installs not on the Option B proxy path (e.g. default-bot, real
+        // Pinecone primary + DuckDB mirror) don't drift.
+        add_action('wp_ajax_mxchat_delete_chunks_by_url', [$this, 'cascade_delete_chunks_by_url'], 1);
+        add_action('wp_ajax_mxchat_bulk_delete_knowledge', [$this, 'cascade_bulk_delete'], 1);
     }
 
     public function incremental_sync_as_action(): void {
@@ -63,6 +70,14 @@ class MxChat_DuckDB_Sync {
 
     public function cascade_delete_handler(): void {
         $this->mysql->cascade_delete_handler();
+    }
+
+    public function cascade_delete_chunks_by_url(): void {
+        $this->mysql->cascade_delete_chunks_by_url();
+    }
+
+    public function cascade_bulk_delete(): void {
+        $this->mysql->cascade_bulk_delete();
     }
 
     public static function vector_id_for_row($row): string {
