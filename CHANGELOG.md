@@ -32,6 +32,71 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ---
 
+## [0.11.1] — 2026-05-21
+
+Test-suite hotfix on the heels of 0.11.0. Now that PHPUnit actually runs in
+CI (the eager-load `exit;` bug that masked it is fixed in 0.11.0), real
+test failures became visible — none of them in production code, all of
+them in the WordPress shim layer used by the unit suite.
+
+No production-code change. No schema migration. Safe drop-in from 0.11.0.
+
+### Fixed
+
+- **Test shims now win over `php-stubs/wordpress-stubs`.** The shim
+  guards in `tests/shims/wp-classes.php` used `class_exists('WP_REST_Request')`
+  with the default `$autoload = true`, which triggered Composer's
+  optimized classmap to resolve the name to
+  `vendor/php-stubs/wordpress-stubs/wordpress-stubs.php` (a transitive
+  dev-dep of `szepeviktor/phpstan-wordpress`) before our shim could
+  declare its test-only methods (`set_json_params`, `set_query_params`,
+  `set_header`, the array-constructible `WP_Post`, the matcher-driven
+  `WP_Query`, …). Passing `false` to skip autoload makes the shim
+  always declare first when bootstrap runs, so every downstream class-
+  resolution lookup finds the shim version. Caught 43 CI test failures
+  across `ProxyAuthTest`, `ProxyHandlersTest`, `HealthEndpointTest`,
+  `AdminAjaxTest`, `AsyncReprocessTest`, `PostReprocessorTest`, and
+  `CliTest` that had been hiding behind the v0.10.x silent-exit bug.
+- **`OptionsSanitizeTest::test_resolved_motherduck_token_constant_takes_precedence`**
+  now runs in a forked PHP process (`@runInSeparateProcess` +
+  `@preserveGlobalState disabled`). The test defines the
+  `MXCHAT_DUCKDB_MOTHERDUCK_TOKEN` constant, and PHP doesn't allow
+  undefining constants — leaving it set permanently shadowed every
+  subsequent test's `motherduck_token` field, breaking
+  `MotherDuckConnectionTest`'s empty-token guard under any test order
+  other than alphabetical. The sibling
+  `test_resolved_motherduck_token_returns_option_when_no_constant` is
+  also simplified now that the in-process world is guaranteed
+  constant-free.
+- **PHPStan now actually runs in CI.** Same root cause as PHPUnit: the
+  v0.10.x composer eager-load `exit;` killed the analyser too, so the
+  green "PHPStan: success" badge was meaningless — `exit;` returns 0,
+  CI sees 0, CI is happy. With that fixed in v0.11.0, the analyser ran
+  for real and surfaced 166 pre-existing `missingType.iterableValue`
+  / `missingType.return` / `missingType.parameter` findings at level 6.
+  None are new from this release; the path to level 7/8 (per the
+  CHANGELOG `Planned` section) involves annotating proper
+  `array<key, value>` / shape / return types, file by file. To keep
+  CI green now and track the work as a real backlog, a new
+  `phpstan-baseline.neon` file is added under `includes:` in
+  `phpstan.neon.dist`. Any error not already in the baseline still
+  fails the build — so no NEW findings can slip past.
+- **Stale ignore-pattern removed.** The
+  `Call to an undefined method MxChat_DuckDB_Connection::table_name_quoted`
+  ignore predates `table_name_quoted()` being moved onto
+  `Vector_Store`. It no longer matches anything, and PHPStan rightly
+  complains about unused ignore patterns. Removed.
+
+### Notes
+
+These were all latent — the test suite was silently passing in v0.10.x
+because Composer's `"files"` autoload of `class-duckdb-cli.php` killed
+PHPUnit with `exit;` before any test ran. The CI green badge was
+meaningless until 0.11.0 fixed that bug; this release fixes the
+issues that 0.11.0's fix exposed.
+
+---
+
 ## [0.11.0] — 2026-05-21
 
 Hardening + ergonomics pass triggered by a senior-review of the v0.10.1

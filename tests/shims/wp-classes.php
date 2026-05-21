@@ -8,7 +8,7 @@
  * that takes the args dict and returns ['posts' => …, 'found_posts' => …].
  */
 
-if (!class_exists('WP_Post')) {
+if (!class_exists('WP_Post', false)) {
     class WP_Post {
         public int $ID = 0;
         public string $post_title = '';
@@ -21,7 +21,7 @@ if (!class_exists('WP_Post')) {
     }
 }
 
-if (!class_exists('WP_Query')) {
+if (!class_exists('WP_Query', false)) {
     class WP_Query {
         public array $posts = [];
         public int $found_posts = 0;
@@ -36,7 +36,7 @@ if (!class_exists('WP_Query')) {
     }
 }
 
-if (!class_exists('WP_Error')) {
+if (!class_exists('WP_Error', false)) {
     class WP_Error {
         public string $message;
         public function __construct($code = '', string $message = '') {
@@ -62,7 +62,13 @@ if (!function_exists('get_permalink')) {
 
 // REST stubs — covers the surface that Pinecone_Proxy::check_token,
 // /health, and the REST handlers actually exercise.
-if (!class_exists('WP_REST_Request')) {
+// pass `false` to suppress autoload: composer's optimized classmap in CI
+// resolves WP_REST_Request to vendor/php-stubs/wordpress-stubs/wordpress-stubs.php
+// (a transitive dev-dep of szepeviktor/phpstan-wordpress) before the shim is
+// reached, which would silently strip our test-only methods (set_json_params,
+// set_query_params, ...). Skipping autoload lets the shim always win when no
+// class is yet declared at the start of bootstrap.
+if (!class_exists('WP_REST_Request', false)) {
     class WP_REST_Request {
         private array $headers = [];
         private array $params = [];
@@ -96,7 +102,7 @@ if (!class_exists('WP_REST_Request')) {
     }
 }
 
-if (!class_exists('WP_REST_Response')) {
+if (!class_exists('WP_REST_Response', false)) {
     class WP_REST_Response {
         public $data;
         public int $status;

@@ -1,3 +1,6 @@
+includes:
+    - phpstan-baseline.neon
+
 services:
     -
         class: MxChat\DuckDB\PHPStan\UnsafeSqlConstructionRule
@@ -30,8 +33,15 @@ parameters:
     dynamicConstantNames:
         - WP_DEBUG
         - WP_CLI
+    # All missingType.iterableValue + missingType.return + missingType.parameter
+    # findings live in phpstan-baseline.neon. They've existed in the codebase
+    # since the strict level-6 elevation; the path to level 7/8 (per
+    # CHANGELOG's Planned section) involves replacing them with proper
+    # array<key, value> / shape / return-type annotations, file by file.
+    # Until that work is done, the baseline keeps CI green without hiding
+    # any *new* findings — any error not already in the baseline will fail
+    # the build.
     ignoreErrors:
-        - '#Call to an undefined method MxChat_DuckDB_Connection::table_name_quoted\(\)#'
         # WP-CLI exposes WP_CLI\Utils\format_items and make_progress_bar
         # as helpers; szepeviktor/phpstan-wordpress doesn't currently ship
         # signatures for them, so PHPStan flags them as not-found. The

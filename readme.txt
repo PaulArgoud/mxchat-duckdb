@@ -4,7 +4,7 @@ Tags: chatbot, ai, vector-search, duckdb, motherduck, pinecone, embeddings, rag,
 Requires at least: 6.0
 Tested up to: 6.7
 Requires PHP: 8.0
-Stable tag: 0.11.0
+Stable tag: 0.11.1
 License: GPLv2 or later
 License URI: https://www.gnu.org/licenses/gpl-2.0.html
 
@@ -95,6 +95,12 @@ By default, no — your `.duckdb` file is preserved on uninstall because it may 
 4. Async reprocess progress driven by Action Scheduler.
 
 == Changelog ==
+
+= 0.11.1 =
+* Test-suite hotfix on the heels of 0.11.0. Now that PHPUnit actually runs in CI (the eager-load `exit;` bug that masked it is fixed in 0.11.0), real test failures became visible — none in production code, all in the test shim layer. No schema migration. Safe drop-in from 0.11.0.
+* Fixed: shims in `tests/shims/wp-classes.php` now win over `php-stubs/wordpress-stubs`. The guard `class_exists('WP_REST_Request')` triggered autoload which resolved to the stubs file (a transitive dev-dep of `szepeviktor/phpstan-wordpress`), pre-empting the shim's test-only methods (`set_json_params`, `set_query_params`, `set_header`, the array-constructible `WP_Post`, the matcher-driven `WP_Query`). Pass `false` to skip autoload so the shim declares first. Caught 43 CI failures across ProxyAuth/ProxyHandlers/Health/AdminAjax/AsyncReprocess/PostReprocessor/Cli.
+* Fixed: `OptionsSanitizeTest::test_resolved_motherduck_token_constant_takes_precedence` now runs in a forked PHP process (`@runInSeparateProcess`). The test defines `MXCHAT_DUCKDB_MOTHERDUCK_TOKEN` constant, which PHP can't undefine — leaving it set permanently shadowed every subsequent test's `motherduck_token` field, breaking `MotherDuckConnectionTest`'s empty-token guard under any test order other than alphabetical.
+* Fixed: PHPStan now actually runs in CI. The same v0.10.x autoload `exit;` bug that was killing PHPUnit silently was also killing PHPStan. With v0.11.0's fix, the analyser ran for real and surfaced 166 pre-existing `missingType.*` findings at level 6 — none new from this release. Added `phpstan-baseline.neon` to keep CI green while preserving the level-7/8 backlog (per CHANGELOG `Planned`). Any new finding still fails the build.
 
 = 0.11.0 =
 * Hardening + ergonomics pass triggered by a senior-review of the v0.10.1 codebase. Two real bugs uncovered, three rough edges sanded, upstream-patch story now ships a ready-to-apply unified diff. No schema migration. Safe drop-in from 0.10.1.
@@ -225,6 +231,9 @@ By default, no — your `.duckdb` file is preserved on uninstall because it may 
 * Initial release.
 
 == Upgrade Notice ==
+
+= 0.11.1 =
+Test-suite hotfix. No production-code change. The v0.11.0 fix that made PHPUnit actually run in CI exposed 43 hidden test failures, all in the shim layer used by the unit suite — wordpress-stubs was overshadowing the shim methods because of an autoload-triggering `class_exists()` check. Safe drop-in from 0.11.0.
 
 = 0.11.0 =
 Hardening + ergonomics pass. Two real bugs fixed: silent data loss on `wp mxchat-duckdb sync` for KBs with chunked WP-DB rows (every chunk now lands in its own vector_id instead of collapsing to one), and a composer autoload eager-load bug that was silently exiting PHPUnit / PHPStan locally and likely in CI too. Default-bot Option B now reachable on stock mxchat via a new explicit opt-in (`takeover_default_bot_pinecone`); MotherDuck token can be overridden by `MXCHAT_DUCKDB_MOTHERDUCK_TOKEN` in wp-config.php for compliance-driven installs. Safe drop-in from 0.10.1. No schema migration.

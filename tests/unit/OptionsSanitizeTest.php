@@ -280,38 +280,45 @@ final class OptionsSanitizeTest extends TestCase {
     // ─── MotherDuck token resolution ──────────────────────────────────────
 
     public function test_resolved_motherduck_token_returns_option_when_no_constant(): void {
-        // The constant defined at the test process level can't be unset, so
-        // we only assert the option-fallback path when no override is
-        // defined. The constant-wins path is exercised by the next test
-        // through an in-process runkit-style shim (we set the override
-        // directly via define() if not yet defined and assert it wins).
+        // No constant defined in this process — verify the option-row
+        // fallback. The constant-wins branch is covered in the separate-
+        // process test below (PHP doesn't let us undefine a constant, so
+        // the assertion has to live in a forked process).
+        $this->assertFalse(
+            defined('MXCHAT_DUCKDB_MOTHERDUCK_TOKEN'),
+            'this test assumes the MXCHAT_DUCKDB_MOTHERDUCK_TOKEN constant is NOT defined ' .
+            'in the in-process test world; if you see this fail, another test polluted the constant'
+        );
+
         update_option('mxchat_duckdb_options', array_merge(
             MxChat_DuckDB_Options::defaults(),
             ['motherduck_token' => 'tok-from-option']
         ));
 
-        if (!defined('MXCHAT_DUCKDB_MOTHERDUCK_TOKEN')) {
-            $this->assertSame('tok-from-option', MxChat_DuckDB_Options::resolved_motherduck_token());
-            $this->assertFalse(MxChat_DuckDB_Options::motherduck_token_is_from_constant());
-        } else {
-            // The constant was already defined upstream in this PHP
-            // process; verify it wins (this is the contract).
-            $this->assertSame(
-                (string) constant('MXCHAT_DUCKDB_MOTHERDUCK_TOKEN'),
-                MxChat_DuckDB_Options::resolved_motherduck_token()
-            );
-            $this->assertTrue(MxChat_DuckDB_Options::motherduck_token_is_from_constant());
-        }
+        $this->assertSame('tok-from-option', MxChat_DuckDB_Options::resolved_motherduck_token());
+        $this->assertFalse(MxChat_DuckDB_Options::motherduck_token_is_from_constant());
     }
 
+    /**
+     * Defining a PHP constant is a one-way operation per process; doing it in
+     * an in-process test would permanently shadow `motherduck_token` for every
+     * test that runs after this one, breaking MotherDuckConnectionTest's
+     * empty-token guard. Run in a separate process so the define() is
+     * isolated.
+     *
+     * @runInSeparateProcess
+     * @preserveGlobalState disabled
+     */
     public function test_resolved_motherduck_token_constant_takes_precedence(): void {
-        // Define the constant late so we can also exercise it. Once defined
-        // in a PHP process it's permanent, so this test must run after the
-        // previous one — phpunit's default alpha-by-method order satisfies
-        // that ("constant_takes_precedence" > "returns_option_when_no_constant").
-        if (!defined('MXCHAT_DUCKDB_MOTHERDUCK_TOKEN')) {
-            define('MXCHAT_DUCKDB_MOTHERDUCK_TOKEN', 'tok-from-wpconfig');
+        // Re-bootstrap inside the forked process. PHPUnit's processIsolation
+        // re-runs the configured bootstrap, but with `preserveGlobalState
+        // disabled` it doesn't preserve anything from the parent — we still
+        // need the plugin classes loaded for the assertion below to compile.
+        if (!class_exists('MxChat_DuckDB_Options', false)) {
+            require dirname(__DIR__) . '/bootstrap.php';
         }
+
+        define('MXCHAT_DUCKDB_MOTHERDUCK_TOKEN', 'tok-from-wpconfig');
 
         update_option('mxchat_duckdb_options', array_merge(
             MxChat_DuckDB_Options::defaults(),
@@ -319,7 +326,7 @@ final class OptionsSanitizeTest extends TestCase {
         ));
 
         $this->assertSame(
-            (string) constant('MXCHAT_DUCKDB_MOTHERDUCK_TOKEN'),
+            'tok-from-wpconfig',
             MxChat_DuckDB_Options::resolved_motherduck_token(),
             'wp-config constant must win over the option row'
         );
